@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 node_modules/
 frontend/dist/
-hermitclaw.log.jsonl
+drift.log.jsonl
 .DS_Store
 
 # Agent-generated content (unique to each crab)

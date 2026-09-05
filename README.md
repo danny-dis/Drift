@@ -39,8 +39,8 @@ There's something fascinating about watching a mind that runs continuously. It g
 [uv](https://docs.astral.sh/uv/getting-started/installation) is a fast Python package manager. Install it, then:
 
 ```bash
-https://github.com/danny-dis/drift.git
-cd drift
+git clone https://github.com/danny-dis/Drift.git
+cd Drift
 
 # Python deps (creates .venv, installs from lockfile)
 uv sync
@@ -57,8 +57,8 @@ uv run python drift/main.py
 ### Setup (with pip)
 
 ```bash
-https://github.com/danny-dis/drift.git
-cd drift
+git clone https://github.com/danny-dis/Drift.git
+cd Drift
 
 # Install Python dependencies
 pip install -e .

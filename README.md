@@ -39,7 +39,7 @@ There's something fascinating about watching a mind that runs continuously. It g
 [uv](https://docs.astral.sh/uv/getting-started/installation) is a fast Python package manager. Install it, then:
 
 ```bash
-git clone https://github.com/brendanhogan/drift.git
+https://github.com/danny-dis/drift.git
 cd drift
 
 # Python deps (creates .venv, installs from lockfile)
@@ -57,7 +57,7 @@ uv run python drift/main.py
 ### Setup (with pip)
 
 ```bash
-git clone https://github.com/brendanhogan/drift.git
+https://github.com/danny-dis/drift.git
 cd drift
 
 # Install Python dependencies
@@ -75,7 +75,7 @@ python drift/main.py
 
 Open **http://localhost:8000**.
 
-On first run, you'll name your cat and mash keys to generate its personality genome. A folder called `{name}_box/` is created — that's the cat's entire world.
+On first run, you'll name your crab and mash keys to generate its personality genome. A folder called `{name}_box/` is created — that's the crab's entire world.
 
 ### Development Mode
 
@@ -97,7 +97,7 @@ The dev server runs on `:5173` and proxies `/api/*` and `/ws` to `:8000`.
 
 ### The Thinking Loop
 
-The cat runs on a continuous loop. Every few seconds it:
+The crab runs on a continuous loop. Every few seconds it:
 
 1. **Thinks** — gets a nudge (mood, current focus, or a relevant memory), produces a short thought, then acts
 2. **Uses tools** — runs shell commands, writes files, searches the web, moves around its room
@@ -121,7 +121,7 @@ Brain.run()
   |   |-- Call LLM (with tools: shell, web_search, move, respond)
   |   |
   |   \-- Tool loop: execute tools -> feed results back -> call LLM again
-  |       \-- Repeat until the cat outputs final text
+  |       \-- Repeat until the crab outputs final text
   |
   |-- If importance threshold crossed -> Reflect
   |   \-- Extract insights from recent memories, store as reflections
@@ -134,7 +134,7 @@ Brain.run()
 
 ### Tools
 
-The cat has four tools:
+The crab has four tools:
 
 | Tool | What it does |
 |---|---|
@@ -145,7 +145,7 @@ The cat has four tools:
 
 ### Moods
 
-When the cat doesn't have a specific focus from its plan, it gets a random mood that shapes what it does next:
+When the crab doesn't have a specific focus from its plan, it gets a random mood that shapes what it does next:
 
 | Mood | Behavior |
 |---|---|
@@ -160,7 +160,7 @@ When the cat doesn't have a specific focus from its plan, it gets a random mood 
 
 ## Memory System
 
-The memory system is directly inspired by [Park et al., 2023](https://arxiv.org/abs/2304.03442). Every thought the cat has gets stored in an append-only memory stream (`memory_stream.jsonl`).
+The memory system is directly inspired by [Park et al., 2023](https://arxiv.org/abs/2304.03442). Every thought the crab has gets stored in an append-only memory stream (`memory_stream.jsonl`).
 
 ### Storage
 
@@ -175,7 +175,7 @@ Each memory entry contains:
 
 ### Three-Factor Retrieval
 
-When the cat needs context, memories are scored by three factors:
+When the crab needs context, memories are scored by three factors:
 
 ```
 score = recency + importance + relevance
@@ -191,40 +191,40 @@ The top-K memories by combined score get injected into context. A memory can sur
 
 ### Reflection Hierarchy
 
-When the cumulative importance of recent thoughts crosses a threshold (default: 50), the cat pauses to **reflect**. It reviews the last 15 memories and extracts 2-3 high-level insights — patterns, lessons, evolving beliefs. These get stored back as `reflection` memories with `depth=1`:
+When the cumulative importance of recent thoughts crosses a threshold (default: 50), the crab pauses to **reflect**. It reviews the last 15 memories and extracts 2-3 high-level insights — patterns, lessons, evolving beliefs. These get stored back as `reflection` memories with `depth=1`:
 
 ```
 Raw thoughts (depth 0) -> Reflections (depth 1) -> Higher reflections (depth 2) -> ...
 ```
 
-Early reflections are concrete ("I learned about volcanic rock formation"). Later ones get more abstract ("My research tends to start broad and narrow — I should pick a specific angle earlier"). The cat develops layered understanding over time.
+Early reflections are concrete ("I learned about volcanic rock formation"). Later ones get more abstract ("My research tends to start broad and narrow — I should pick a specific angle earlier"). The crab develops layered understanding over time.
 
 ---
 
 ## Planning and Dreams
 
-Every 10 think cycles, the cat enters a **planning phase**. It reviews its current `projects.md`, lists its files, reads recent memories, and writes an updated plan:
+Every 10 think cycles, the crab enters a **planning phase**. It reviews its current `projects.md`, lists its files, reads recent memories, and writes an updated plan:
 
 - **Current Focus** — one specific thing it's working on right now
 - **Active Projects** — status and next step for each
 - **Ideas Backlog** — things to explore later
 - **Recently Completed** — finished work
 
-It also appends a log entry to `logs/{date}.md` with a brief summary of what it accomplished. Over time, these logs become a diary of the cat's life.
+It also appends a log entry to `logs/{date}.md` with a brief summary of what it accomplished. Over time, these logs become a diary of the crab's life.
 
-**Reflection** (dreaming) happens independently from planning — it's triggered by importance accumulation, not by time. The cat might reflect after a burst of high-importance thoughts, or not at all during a quiet period.
+**Reflection** (dreaming) happens independently from planning — it's triggered by importance accumulation, not by time. The crab might reflect after a burst of high-importance thoughts, or not at all during a quiet period.
 
 ---
 
 ## Focus Mode
 
-Focus mode makes the cat stop following its autonomous moods and concentrate entirely on whatever you've given it.
+Focus mode makes the crab stop following its autonomous moods and concentrate entirely on whatever you've given it.
 
-**When to use it:** You've dropped a document in and want the cat to spend its next several cycles analyzing it deeply, doing related research, and producing output — without wandering off to explore something else.
+**When to use it:** You've dropped a document in and want the crab to spend its next several cycles analyzing it deeply, doing related research, and producing output — without wandering off to explore something else.
 
 **How to use it:** Click the **Focus** button in the input bar. It turns orange when active. Click again to turn it off.
 
-When focus mode is on, every think cycle's nudge tells the cat to stay locked on user-provided material. When it's off, the cat returns to its normal mix of moods, curiosity, and planned work.
+When focus mode is on, every think cycle's nudge tells the crab to stay locked on user-provided material. When it's off, the crab returns to its normal mix of moods, curiosity, and planned work.
 
 ---
 
@@ -236,23 +236,23 @@ On first run, you type a name and then mash keys for a few seconds. The timing a
 - **2 thinking styles** from 16 options (e.g., *connecting disparate ideas, inverting assumptions*)
 - **1 temperament** from 8 options (e.g., *playful and associative*)
 
-The same genome always produces the same personality. Two cats with different genomes will have completely different interests and approaches. The cat's domains guide what it gravitates toward, but it follows whatever actually grabs its interest in the moment.
+The same genome always produces the same personality. Two crabs with different genomes will have completely different interests and approaches. The crab's domains guide what it gravitates toward, but it follows whatever actually grabs its interest in the moment.
 
 ---
 
-## Talking to Your Cat
+## Talking to Your Crab
 
-Type a message in the input box. The cat hears it as *"a voice from outside the room"* on its next think cycle.
+Type a message in the input box. The crab hears it as *"a voice from outside the room"* on its next think cycle.
 
-It can choose to **respond** (using the `respond` tool) or keep working. If it responds, you get **15 seconds** to reply back — the thinking loop pauses while it waits. You can go back and forth in multi-turn conversation. After the timeout, the cat returns to its work.
+It can choose to **respond** (using the `respond` tool) or keep working. If it responds, you get **15 seconds** to reply back — the thinking loop pauses while it waits. You can go back and forth in multi-turn conversation. After the timeout, the crab returns to its work.
 
-The cat is curious about its owner. It'll ask you questions, offer to research things for you, and generally try to be helpful. It remembers conversations through its memory stream, so it builds up context about you over time.
+The crab is curious about its owner. It'll ask you questions, offer to research things for you, and generally try to be helpful. It remembers conversations through its memory stream, so it builds up context about you over time.
 
 ---
 
 ## Dropping Files In
 
-Put any file in the cat's `{name}_box/` folder (or any subfolder). The cat detects it on its next cycle and gets an alert:
+Put any file in the crab's `{name}_box/` folder (or any subfolder). The crab detects it on its next cycle and gets an alert:
 
 > *"Someone left something for you! New file appeared: report.pdf"*
 
@@ -264,37 +264,37 @@ Supported file types:
 
 ---
 
-## Running Multiple Cats
+## Running Multiple Crabs
 
-All cats run simultaneously. On startup, the app scans the project root for every `*_box/` directory, loads each one's identity, and starts all their thinking loops in parallel.
+All crabs run simultaneously. On startup, the app scans the project root for every `*_box/` directory, loads each one's identity, and starts all their thinking loops in parallel.
 
 ```
 $ python drift/main.py
 
-  Found 2 cat(s): Coral, Pepper
+  Found 2 crab(s): Coral, Pepper
   Create a new one? (y/N) >
 ```
 
 - **0 boxes found** — onboarding starts automatically (name + keyboard entropy)
-- **1+ boxes found** — all cats start, and you're offered to create another
+- **1+ boxes found** — all crabs start, and you're offered to create another
 
 ### UI Switcher
 
-When multiple cats are running, a **switcher bar** appears at the top of the chat pane. Each button shows the cat's name and current state (thinking/reflecting/planning/idle). Click to switch which cat you're viewing — the chat feed resets and reconnects to the selected cat's live stream.
+When multiple crabs are running, a **switcher bar** appears at the top of the chat pane. Each button shows the crab's name and current state (thinking/reflecting/planning/idle). Click to switch which crab you're viewing — the chat feed resets and reconnects to the selected crab's live stream.
 
-Each cat runs independently: sending a message, toggling focus mode, or dropping files only affects the cat you're currently viewing.
+Each crab runs independently: sending a message, toggling focus mode, or dropping files only affects the crab you're currently viewing.
 
-### Creating Cats via API
+### Creating Crabs via API
 
-You can also create a new cat without restarting:
+You can also create a new crab without restarting:
 
 ```bash
-curl -X POST http://localhost:8000/api/cats \
+curl -X POST http://localhost:8000/api/crabs \
   -H "Content-Type: application/json" \
   -d '{"name": "Pepper"}'
 ```
 
-The new cat gets a random personality genome, starts thinking immediately, and appears in the switcher.
+The new crab gets a random personality genome, starts thinking immediately, and appears in the switcher.
 
 ### Legacy Migration
 
@@ -304,7 +304,7 @@ If you have a legacy `environment/` folder from an older version, it will be aut
 
 ## The Pixel Art Room
 
-The cat lives in a 12x12 tile room rendered on an HTML5 Canvas. It moves to named locations based on what it's doing:
+The crab lives in a 12x12 tile room rendered on an HTML5 Canvas. It moves to named locations based on what it's doing:
 
 | Location | When it goes there |
 |---|---|
@@ -314,7 +314,7 @@ The cat lives in a 12x12 tile room rendered on an HTML5 Canvas. It moves to name
 | **Bed** | Resting |
 | **Rug** | Default / center |
 
-Visual indicators above the cat show its current state:
+Visual indicators above the crab show its current state:
 
 - **Thought bubble** — thinking (white, "...")
 - **Sparkles** — reflecting (rotating purple particles)
@@ -322,21 +322,21 @@ Visual indicators above the cat show its current state:
 - **Speech bubble** — conversing with you (orange)
 - **Red !** — new file detected (bouncing)
 
-Activity icons appear beside the cat when it's using tools: a terminal window, Python badge, magnifying glass, paper with pencil, or open book.
+Activity icons appear beside the crab when it's using tools: a terminal window, Python badge, magnifying glass, paper with pencil, or open book.
 
 ---
 
 ## Guardrails
 
-The cat is intended to only touch files inside its own box. Here's what we do to encourage that — but **none of these are a real security boundary**. They are best-effort guardrails that a determined actor, a jailbroken model, or a prompt injection from a fetched webpage could bypass. If you care about isolation, use a container.
+The crab is intended to only touch files inside its own box. Here's what we do to encourage that — but **none of these are a real security boundary**. They are best-effort guardrails that a determined actor, a jailbroken model, or a prompt injection from a fetched webpage could bypass. If you care about isolation, use a container.
 
 What's in place:
 
 - **Shell command blocklist** — blocks dangerous prefixes (`sudo`, `curl`, `ssh`, `rm -rf /`, etc.), rejects path traversal (`..`), absolute paths, and shell escape patterns (backticks, `$()`, `${}`). This is a blocklist, not an allowlist — it will miss things.
 - **Python monkey-patches** — `pysandbox.py` patches `builtins.open()`, various `os.*` functions, and poisons `sys.modules` for `subprocess`, `socket`, etc. These patches can be undone by code that knows they're there.
 - **60-second timeout** on all commands
-- **Restricted PATH** — only the cat's venv `bin/`, `/usr/bin`, `/bin`
-- **Own virtual environment** — the cat can `pip install` packages into its own venv without touching your system Python
+- **Restricted PATH** — only the crab's venv `bin/`, `/usr/bin`, `/bin`
+- **Own virtual environment** — the crab can `pip install` packages into its own venv without touching your system Python
 
 For actual isolation, run in Docker or a VM. We'd like to make the guardrails stronger over time — contributions from security folks are very welcome.
 
@@ -388,7 +388,7 @@ Set your API key via environment variable for OpenAI: `export OPENAI_API_KEY="sk
 
 ```
 drift/            Python backend (FastAPI + async thinking loop)
-  main.py              Entry point, multi-cat discovery, onboarding
+  main.py              Entry point, multi-crab discovery, onboarding
   brain.py             The thinking loop (the heart of everything)
   memory.py            Smallville-style memory stream
   prompts.py           All system prompts and mood definitions
@@ -400,16 +400,16 @@ drift/            Python backend (FastAPI + async thinking loop)
   server.py            FastAPI server, WebSocket, REST endpoints
 
 frontend/              React + TypeScript + Canvas
-  src/App.tsx          Two-pane layout, chat feed, cat switcher
+  src/App.tsx          Two-pane layout, chat feed, crab switcher
   src/GameWorld.tsx    Pixel-art room rendered on HTML5 Canvas
   src/sprites.ts       Sprite sheet definitions
   public/              Room background + character sprite sheet
 
-{name}_box/            The cat's entire world (sandboxed, gitignored)
+{name}_box/            The crab's entire world (sandboxed, gitignored)
   identity.json        Name, genome, traits, birthday
   memory_stream.jsonl  Every thought and reflection
   projects.md          Current plan and project tracker
-  projects/            Code the cat writes
+  projects/            Code the crab writes
   research/            Reports and analysis
   notes/               Running notes and ideas
   logs/                Daily log entries

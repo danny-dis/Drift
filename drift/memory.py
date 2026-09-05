@@ -14,8 +14,6 @@ from drift.providers import chat_short, embed
 logger = logging.getLogger("drift.memory")
 
 STREAM_FILENAME = "memory_stream.jsonl"
-CLUSTERS_FILENAME = "clusters.json"
-CLUSTER_SIMILARITY_THRESHOLD = 0.70
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
@@ -59,98 +57,6 @@ class MemoryStream:
             self._next_id = max_id + 1
             # importance_sum starts at 0 after restart (reflection threshold resets)
         logger.info(f"Loaded {len(self.memories)} memories from stream")
-        # Load clusters
-        self.clusters: list[dict] = []
-        self._load_clusters()
-
-    def _load_clusters(self):
-        """Load cluster index from disk."""
-        path = os.path.join(os.path.dirname(self.path), CLUSTERS_FILENAME)
-        if not os.path.isfile(path):
-            return
-        try:
-            with open(path, "r") as f:
-                self.clusters = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load clusters: {e}")
-        logger.info(f"Loaded {len(self.clusters)} memory clusters")
-
-    def _save_clusters(self):
-        """Persist cluster index to disk."""
-        path = os.path.join(os.path.dirname(self.path), CLUSTERS_FILENAME)
-        try:
-            with open(path, "w") as f:
-                json.dump(self.clusters, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save clusters: {e}")
-
-    def _assign_cluster(self, entry: dict):
-        """Assign a memory to the closest cluster, or create a new one."""
-        embedding = entry.get("embedding")
-        if not embedding:
-            return
-
-        best_sim = -1.0
-        best_cluster = None
-        for cluster in self.clusters:
-            sim = _cosine_sim(embedding, cluster["centroid"])
-            if sim > best_sim:
-                best_sim = sim
-                best_cluster = cluster
-
-        if best_cluster and best_sim >= CLUSTER_SIMILARITY_THRESHOLD:
-            # Join existing cluster
-            best_cluster["members"].append(entry["id"])
-            # Update centroid (running average)
-            n = len(best_cluster["members"])
-            best_cluster["centroid"] = [
-                (c * (n - 1) + e) / n
-                for c, e in zip(best_cluster["centroid"], embedding)
-            ]
-            entry["cluster"] = best_cluster["id"]
-            logger.info(f"Memory {entry['id']} joined cluster '{best_cluster['label']}' (sim={best_sim:.2f})")
-        else:
-            # Create new cluster
-            cluster_id = f"c_{len(self.clusters):03d}"
-            label = entry["content"][:60].replace("\n", " ").strip()
-            if len(entry["content"]) > 60:
-                label += "..."
-            new_cluster = {
-                "id": cluster_id,
-                "label": label,
-                "centroid": embedding,
-                "members": [entry["id"]],
-            }
-            self.clusters.append(new_cluster)
-            entry["cluster"] = cluster_id
-            logger.info(f"Memory {entry['id']} started new cluster '{label}'")
-
-        self._save_clusters()
-
-    def get_cluster_for_memory(self, memory_id: str) -> dict | None:
-        """Look up the cluster a memory belongs to."""
-        for cluster in self.clusters:
-            if memory_id in cluster["members"]:
-                return cluster
-        return None
-
-    def get_cluster_label(self, cluster_id: str) -> str:
-        """Get the human-readable label for a cluster."""
-        for cluster in self.clusters:
-            if cluster["id"] == cluster_id:
-                return cluster["label"]
-        return ""
-
-    def get_all_clusters(self) -> list[dict]:
-        """Return all clusters with summary info."""
-        return [
-            {
-                "id": c["id"],
-                "label": c["label"],
-                "count": len(c["members"]),
-            }
-            for c in self.clusters
-        ]
 
     def add(
         self,
@@ -181,9 +87,6 @@ class MemoryStream:
             "embedding": embedding,
         }
 
-        # Assign to a cluster
-        self._assign_cluster(entry)
-
         self.memories.append(entry)
         self._next_id += 1
         self.importance_sum += importance
@@ -197,14 +100,6 @@ class MemoryStream:
 
         logger.info(f"Memory {entry['id']}: importance={importance}, kind={kind}")
         return entry
-
-    def set_context_clusters(self, recent_memories: list[dict]):
-        """Set the cluster IDs from recent memories to boost related retrievals."""
-        self._recent_cluster_ids = set()
-        for mem in recent_memories:
-            cid = mem.get("cluster")
-            if cid:
-                self._recent_cluster_ids.add(cid)
 
     def retrieve(self, query: str, top_k: int = None) -> list[dict]:
         """Three-factor retrieval: recency × importance × relevance."""
@@ -243,14 +138,7 @@ class MemoryStream:
             else:
                 relevance = 0.0
 
-            # Cluster boost: memories in the same cluster as recent context get a bonus
-            cluster_bonus = 0.0
-            cluster_id = mem.get("cluster")
-            if cluster_id and hasattr(self, "_recent_cluster_ids"):
-                if cluster_id in self._recent_cluster_ids:
-                    cluster_bonus = 0.3
-
-            score = recency + importance + relevance + cluster_bonus
+            score = recency + importance + relevance
             scored.append((score, mem))
 
         scored.sort(key=lambda x: x[0], reverse=True)

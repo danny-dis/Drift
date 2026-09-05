@@ -81,8 +81,8 @@ def test_translate_role_messages_pass_through():
 def test_translate_prepends_system_message():
     """Instructions should become a system message at the front."""
     input_list = [{"role": "user", "content": "Hello"}]
-    messages = _translate_input_to_messages(input_list, instructions="You are a cat.")
-    assert messages[0] == {"role": "system", "content": "You are a cat."}
+    messages = _translate_input_to_messages(input_list, instructions="You are a crab.")
+    assert messages[0] == {"role": "system", "content": "You are a crab."}
     assert messages[1] == {"role": "user", "content": "Hello"}
 
 

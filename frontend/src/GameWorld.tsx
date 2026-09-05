@@ -4,8 +4,7 @@
  */
 
 import { useRef, useEffect, useImperativeHandle, forwardRef } from "react";
-import { COLS, ROWS, TILE } from "./sprites";
-import { drawPet } from "./pet_sprites";
+import { COLS, ROWS, TILE, CHAR_SIZE, FRAMES, WALK_SEQ, IDLE_FRAME } from "./sprites";
 
 const W = COLS * TILE; // 384
 const H = ROWS * TILE; // 384
@@ -22,7 +21,6 @@ interface Props {
   alert: boolean;
   activity: Activity;
   conversing: boolean;
-  petType?: string;
 }
 
 export interface GameWorldHandle {
@@ -125,7 +123,7 @@ function drawReading(ctx: CanvasRenderingContext2D, x: number, y: number) {
 }
 
 const GameWorld = forwardRef<GameWorldHandle, Props>(
-  ({ position, state, alert, activity, conversing, petType = "cat" }, ref) => {
+  ({ position, state, alert, activity, conversing }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const posRef = useRef({ x: position.x, y: position.y });
     const targetRef = useRef({ x: position.x, y: position.y });
@@ -137,7 +135,7 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
     const walkIndexRef = useRef(0);
     const frameCountRef = useRef(0);
     const roomImgRef = useRef<HTMLImageElement | null>(null);
-    const petTypeRef = useRef(petType);
+    const charImgRef = useRef<HTMLImageElement | null>(null);
 
     useImperativeHandle(ref, () => ({
       snapshot: () => canvasRef.current?.toDataURL() || "",
@@ -163,11 +161,7 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
       conversingRef.current = conversing;
     }, [conversing]);
 
-    useEffect(() => {
-      petTypeRef.current = petType;
-    }, [petType]);
-
-    // Load room image and start render loop
+    // Load images and start render loop
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -177,8 +171,12 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
       let running = true;
 
       (async () => {
-        const roomImg = await loadImage("/room.png");
+        const [roomImg, charImg] = await Promise.all([
+          loadImage("/room.png"),
+          loadImage("/character.png"),
+        ]);
         roomImgRef.current = roomImg;
+        charImgRef.current = charImg;
 
         const render = () => {
           if (!running) return;
@@ -198,7 +196,8 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
             }
             frameCountRef.current++;
             if (frameCountRef.current % 8 === 0) {
-              walkIndexRef.current = (walkIndexRef.current + 1) % 4;
+              walkIndexRef.current =
+                (walkIndexRef.current + 1) % WALK_SEQ.length;
             }
           } else {
             pos.x = target.x;
@@ -212,13 +211,29 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
           // Room background
           ctx.drawImage(roomImg, 0, 0, W, H);
 
-          // Pet sprite (procedural pixel art)
+          // Character sprite
+          const dir = dirRef.current;
+          const frames = FRAMES[dir] || FRAMES.down;
+          const frameIdx = moving
+            ? WALK_SEQ[walkIndexRef.current]
+            : IDLE_FRAME;
+          const frame = frames[frameIdx];
+
           const charX = pos.x * TILE + TILE / 2 - DISPLAY_SIZE / 2;
           const charY = pos.y * TILE + TILE - DISPLAY_SIZE;
-          const animFrame = moving ? walkIndexRef.current : 0;
-          drawPet(ctx, petTypeRef.current, charX, charY, DISPLAY_SIZE, animFrame);
+          ctx.drawImage(
+            charImg,
+            frame.x,
+            frame.y,
+            CHAR_SIZE,
+            CHAR_SIZE,
+            charX,
+            charY,
+            DISPLAY_SIZE,
+            DISPLAY_SIZE,
+          );
 
-          // State indicator (above cat)
+          // State indicator (above crab)
           const curState = stateRef.current;
           const indicatorX = charX + DISPLAY_SIZE / 2;
           const indicatorY = charY - 8;
@@ -300,7 +315,7 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(
             ctx.fill();
           }
 
-          // Activity indicator (to the right of cat)
+          // Activity indicator (to the right of crab)
           const act = activityRef.current;
           if (act.type !== "idle" && act.type !== "moving") {
             const actX = charX + DISPLAY_SIZE + 8;

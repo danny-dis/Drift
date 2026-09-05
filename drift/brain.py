@@ -1,4 +1,4 @@
-"""The thinking loop — the heart of the cat."""
+"""The thinking loop — the heart of the hermit crab."""
 
 import asyncio
 import base64
@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import random
-import re
 from datetime import datetime, date
 
 from drift.config import config
@@ -15,32 +14,12 @@ from drift.prompts import (
     main_system_prompt,
     REFLECTION_PROMPT,
     PLANNING_PROMPT,
-    focus_nudge,
+    FOCUS_NUDGE,
 )
 from drift.providers import chat, chat_short
 from drift.tools import execute_tool, ensure_venv
 
 logger = logging.getLogger("drift.brain")
-
-
-def _strip_images(input_list: list) -> list:
-    """Remove image content from input messages, keeping only text."""
-    cleaned = []
-    for item in input_list:
-        if isinstance(item, dict) and item.get("role") == "user":
-            content = item.get("content")
-            if isinstance(content, list):
-                # Multi-part content: keep only text parts
-                text_parts = [p for p in content if isinstance(p, dict) and p.get("type") == "input_text"]
-                if text_parts:
-                    cleaned.append({**item, "content": text_parts})
-                else:
-                    cleaned.append(item)
-            else:
-                cleaned.append(item)
-        else:
-            cleaned.append(item)
-    return cleaned
 
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "drift.log.jsonl")
 
@@ -128,7 +107,7 @@ class Brain:
         "center": {"x": 5, "y": 5},
     }
 
-    # Tiles the cat cannot walk on (from Smallville collision layer)
+    # Tiles the crab cannot walk on (from Smallville collision layer)
     _BLOCKED: set[tuple[int, int]] = set()
 
     @staticmethod
@@ -174,7 +153,7 @@ class Brain:
     }
     _PDF_EXTS = {".pdf"}
     _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-    # Internal files the cat/system manages — never trigger alerts
+    # Internal files the crab/system manages — never trigger alerts
     _IGNORE_FILES = {"memory_stream.jsonl", "identity.json"}
     # Internal files that live in the root but shouldn't trigger inbox alerts
     _INTERNAL_ROOT_FILES = {"projects.md"}
@@ -207,42 +186,16 @@ class Brain:
 
         # Focus mode
         self._focus_mode: bool = False
-        self._focus_topic: str = ""
-        self._focus_until: float = 0.0  # monotonic time when focus expires; 0 = no expiry
 
-        # Pause control
-        self._paused: bool = False
-
-        # Pace control — can be overridden per-session
-        self._pace_override: float | None = None
-
-        # Research-to-output tracking — nudge the cat to write files
+        # Research-to-output tracking — nudge the crab to write files
         # after sustained research activity
         self._consecutive_research_cycles: int = 0
-
-        # Context compression — summary of older events
-        self._context_summary: str = ""
-        self._events_since_compress: int = 0
-
-        # Unresolved loop detection
-        self._open_loops: list[dict] = []  # [{text, timestamp, thought_num}]
-
-        # Stalled project detection
-        self._last_projects_hash: str = ""
-        self._cycles_since_projects_change: int = 0
-
-        # Cognitive overload detection
-        self._recent_tools: list[str] = []  # last 10 tool names
 
         # Conversation state
         self._user_message: str | None = None
         self._conversation_event: asyncio.Event = asyncio.Event()
         self._conversation_reply: str | None = None
         self._waiting_for_reply: bool = False
-
-        # Failure tracking
-        self._consecutive_failures: int = 0
-        self._max_consecutive_failures: int = 5
 
     # --- Helpers ---
 
@@ -408,42 +361,14 @@ class Brain:
         self._user_message = text
 
     def receive_conversation_reply(self, text: str):
-        """Deliver a reply while the cat is waiting (inside a respond tool call)."""
+        """Deliver a reply while the crab is waiting (inside a respond tool call)."""
         self._conversation_reply = text
         self._conversation_event.set()
 
-    async def set_focus_mode(self, enabled: bool, topic: str = "", duration_minutes: int = 0):
-        """Toggle focus mode on or off, optionally with a topic and auto-expiry duration."""
+    async def set_focus_mode(self, enabled: bool):
+        """Toggle focus mode on or off."""
         self._focus_mode = enabled
-        self._focus_topic = topic if enabled else ""
-        if enabled and duration_minutes > 0:
-            self._focus_until = asyncio.get_event_loop().time() + duration_minutes * 60
-        else:
-            self._focus_until = 0.0
-        await self._broadcast({
-            "event": "focus_mode",
-            "data": {
-                "enabled": enabled,
-                "topic": self._focus_topic,
-                "duration_minutes": duration_minutes,
-            },
-        })
-
-    async def set_paused(self, paused: bool):
-        """Pause or resume the thinking loop."""
-        self._paused = paused
-        await self._broadcast({"event": "paused", "data": {"paused": paused}})
-
-    def set_pace(self, pace_seconds: float | None):
-        """Set a pace override. None resets to config default."""
-        self._pace_override = max(1.0, min(120.0, pace_seconds)) if pace_seconds else None
-
-    @property
-    def current_pace(self) -> float:
-        """Effective thinking pace in seconds."""
-        if self._pace_override is not None:
-            return self._pace_override
-        return config["thinking_pace_seconds"]
+        await self._broadcast({"event": "focus_mode", "data": {"enabled": enabled}})
 
     # --- File detection ---
 
@@ -551,83 +476,6 @@ class Brain:
             return {"type": "shell", "detail": cmd[:50]}
         return {"type": "working", "detail": tool_name}
 
-    # --- Context compression ---
-
-    COMPRESS_THRESHOLD = 100  # compress when events exceed this
-
-    def _compress_context(self):
-        """Summarize older events into a compact context string."""
-        if len(self.events) <= self.COMPRESS_THRESHOLD:
-            return
-
-        # Take the older half of events
-        cutoff = len(self.events) // 2
-        old_events = self.events[:cutoff]
-
-        tools_used = set()
-        topics = []
-        for ev in old_events:
-            if ev["type"] == "tool_call":
-                tools_used.add(ev.get("tool", ""))
-            if ev["type"] == "thought" and ev.get("text"):
-                # Keep first sentence of each thought as a topic hint
-                first_line = ev["text"].split(".")[0][:100].strip()
-                if first_line:
-                    topics.append(first_line)
-
-        parts = []
-        if topics:
-            # Keep last 10 topic hints
-            parts.append("Earlier topics: " + "; ".join(topics[-10:]))
-        if tools_used:
-            parts.append("Tools used: " + ", ".join(sorted(tools_used)))
-        parts.append(f"({len(old_events)} events compressed)")
-
-        self._context_summary = " | ".join(parts)
-
-        # Remove old events (keep recent half)
-        self.events = self.events[cutoff:]
-        logger.info(f"Compressed context: {cutoff} events -> summary of {len(self._context_summary)} chars")
-
-    # --- Unresolved loop detection ---
-
-    _LOOP_STARTERS = re.compile(
-        r"\b(let me |i'll |i need to |going to |next i|"
-        r"i should |i'm going to |i want to |time to )",
-        re.IGNORECASE,
-    )
-    _LOOP_ENDERS = re.compile(
-        r"\b(done|finished|completed|got it|that's it|"
-        r"all set|wrapped up|resolved|figured out)\b",
-        re.IGNORECASE,
-    )
-
-    def _detect_loops(self, thought_text: str):
-        """Track open-ended intentions and close completed ones."""
-        # Check if any open loops are being closed
-        if self._open_loops:
-            self._open_loops = [
-                loop for loop in self._open_loops
-                if not self._LOOP_ENDERS.search(thought_text)
-            ]
-
-        # Detect new loop starters
-        match = self._LOOP_STARTERS.search(thought_text)
-        if match:
-            # Extract the intention (up to 80 chars after the marker)
-            start = match.end()
-            intention = thought_text[start:start + 80].strip()
-            # Don't duplicate very similar loops
-            if not any(intention[:30] in loop["text"] for loop in self._open_loops):
-                self._open_loops.append({
-                    "text": intention[:80],
-                    "timestamp": datetime.now().isoformat(),
-                    "thought_num": self.thought_count,
-                })
-                # Cap at 10
-                if len(self._open_loops) > 10:
-                    self._open_loops = self._open_loops[-10:]
-
     # --- Input building ---
 
     def _build_input(self) -> tuple[str, list[dict]]:
@@ -707,7 +555,7 @@ class Brain:
                     "content": content_parts if len(content_parts) > 1 else nudge,
                 }
             )
-            # Reset plan counter so the cat has time to work on the file
+            # Reset plan counter so the crab has time to work on the file
             self._cycles_since_plan = 0
             self._inbox_pending = []
         # Include room snapshot on wake-up only (first think cycle)
@@ -731,7 +579,7 @@ class Brain:
         return instructions, input_list
 
     def _build_wake_nudge(self) -> str:
-        """Rich wake-up context — reads the cat's own files so it knows what it built."""
+        """Rich wake-up context — reads the crab's own files so it knows what it built."""
         parts = ["You're waking up. Here's your world:\n"]
 
         # Read projects.md
@@ -749,8 +597,7 @@ class Brain:
             listing = "\n".join(f"  {f}" for f in files[:30])
             parts.append(f"**Files in your world:**\n{listing}")
 
-        # Retrieve memories (boosted by cluster context)
-        self.stream.set_context_clusters(self.stream.get_recent(10))
+        # Retrieve memories
         memories = self.stream.retrieve(
             "what was I working on and thinking about", top_k=5
         )
@@ -767,7 +614,7 @@ class Brain:
         """Continue nudge — includes current focus and relevant memories."""
         # Focus mode overrides normal nudge behavior
         if self._focus_mode:
-            return "Continue.\n" + focus_nudge(self._focus_topic)
+            return "Continue.\n" + FOCUS_NUDGE
 
         parts = []
 
@@ -787,39 +634,6 @@ class Brain:
                 "to a file (e.g. research/topic_name.md)."
             )
 
-        # Compressed context summary from older events
-        if self._context_summary:
-            parts.append(f"Earlier context: {self._context_summary}")
-
-        # Open loops — things you started but didn't finish
-        if self._open_loops:
-            loop_lines = [f"- {loop['text']}" for loop in self._open_loops[-5:]]
-            parts.append("Unresolved threads you started:\n" + "\n".join(loop_lines))
-
-        # Cognitive overload detection — too many different tools/activities
-        if len(self._recent_tools) >= 8:
-            unique_tools = len(set(self._recent_tools))
-            if unique_tools >= 5:
-                parts.append(
-                    "You've been jumping between many different activities. "
-                    "Slow down. Pick ONE thing and focus on it for a few cycles."
-                )
-
-        # Stalled project detection
-        projects_content = self._read_file("projects.md") or ""
-        projects_hash = str(hash(projects_content))
-        if projects_hash != self._last_projects_hash:
-            self._last_projects_hash = projects_hash
-            self._cycles_since_projects_change = 0
-        else:
-            self._cycles_since_projects_change += 1
-        if self._cycles_since_projects_change > 50:
-            parts.append(
-                "Your projects.md hasn't changed in a while. "
-                "Is there a project you've been avoiding? "
-                "Consider updating your focus or breaking a stalled project into smaller steps."
-            )
-
         # Current focus (from planning)
         if self._current_focus:
             parts.append(f"Current focus: {self._current_focus}")
@@ -830,7 +644,6 @@ class Brain:
             None,
         )
         if last_thought:
-            self.stream.set_context_clusters(self.stream.get_recent(10))
             memories = self.stream.retrieve(last_thought, top_k=3)
             if memories:
                 now = datetime.now()
@@ -859,13 +672,6 @@ class Brain:
             }
         )
 
-        # Circuit breaker — pause if too many consecutive failures
-        if self._consecutive_failures >= self._max_consecutive_failures:
-            logger.warning(f"Circuit breaker: {self._consecutive_failures} consecutive failures, pausing for 60s")
-            await self._emit("error", text=f"Too many failures ({self._consecutive_failures}). Pausing for 60 seconds.")
-            await asyncio.sleep(60)
-            self._consecutive_failures = 0
-
         instructions, input_list = self._build_input()
 
         try:
@@ -874,38 +680,11 @@ class Brain:
                 chat, input_list, True, instructions, max_tokens
             )
         except Exception as e:
-            # If the error is about image input not being supported, retry without images
-            if "image" in str(e).lower():
-                logger.warning("Model doesn't support image input, retrying without images")
-                input_list = _strip_images(input_list)
-                try:
-                    response = await asyncio.to_thread(
-                        chat, input_list, True, instructions, max_tokens
-                    )
-                except Exception as e2:
-                    self._consecutive_failures += 1
-                    logger.error(f"LLM call failed: {e2}")
-                    await self._emit("error", text=str(e2))
-                    return
-            else:
-                self._consecutive_failures += 1
-                logger.error(f"LLM call failed: {e}")
-                await self._emit("error", text=str(e))
-                return
-
-        await self._emit_api_call(instructions, input_list, response)
-
-        # Check for empty/malformed response
-        has_text = bool(response.get("text"))
-        has_tools = bool(response.get("tool_calls"))
-        if not has_text and not has_tools:
-            self._consecutive_failures += 1
-            logger.warning(f"Empty LLM response (failure #{self._consecutive_failures})")
-            await self._emit("error", text="Empty response from LLM.")
+            logger.error(f"LLM call failed: {e}")
+            await self._emit("error", text=str(e))
             return
 
-        # Successful response — reset failure counter
-        self._consecutive_failures = 0
+        await self._emit_api_call(instructions, input_list, response)
 
         # Detect web search in response output
         if any(
@@ -943,11 +722,6 @@ class Brain:
                 tool_args = tc["arguments"]
                 call_id = tc["call_id"]
 
-                # Track recent tools for overload detection
-                self._recent_tools.append(tool_name)
-                if len(self._recent_tools) > 10:
-                    self._recent_tools = self._recent_tools[-10:]
-
                 if tool_name in ("web_search", "web_fetch", "fetch_url"):
                     did_research = True
 
@@ -976,7 +750,7 @@ class Brain:
                 )
                 await self._emit("tool_result", tool=tool_name, output=result)
 
-                # Only mark files the cat created (not user-dropped files)
+                # Only mark files the crab created (not user-dropped files)
                 post_tool_files = self._scan_env_files()
                 self._seen_env_files |= post_tool_files - pre_tool_files
 
@@ -1063,12 +837,6 @@ class Brain:
                 await asyncio.to_thread(self.stream.add, response["text"], "thought")
             except Exception as e:
                 logger.error(f"Memory add failed: {e}")
-
-            # Detect unresolved loops
-            self._detect_loops(response["text"])
-
-        # Compress context if events are growing too large
-        self._compress_context()
 
     # --- Reflection ---
 
@@ -1239,13 +1007,6 @@ class Brain:
         logger.info(f"{self.identity['name']} is ready.")
 
         while self.running:
-            # Auto-expire focus mode if duration was set
-            if self._focus_mode and self._focus_until > 0:
-                if asyncio.get_event_loop().time() >= self._focus_until:
-                    topic = self._focus_topic
-                    await self.set_focus_mode(False)
-                    logger.info(f"Focus mode expired (was: {topic or 'untargeted'})")
-
             # Check for new files anywhere in environment/
             new_files = self._check_new_files()
             if new_files:
@@ -1270,12 +1031,7 @@ class Brain:
                 }
             )
             await self._idle_wander()
-
-            # Respect pause — poll until unpaused
-            while self._paused and self.running:
-                await asyncio.sleep(0.5)
-
-            await asyncio.sleep(self.current_pace)
+            await asyncio.sleep(config["thinking_pace_seconds"])
 
     def stop(self):
         self.running = False

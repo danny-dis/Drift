@@ -10,10 +10,9 @@ interface ApiCall {
   is_planning?: boolean;
 }
 
-interface CatInfo {
+interface CrabInfo {
   id: string;
   name: string;
-  pet_type: string;
   state: string;
   thought_count: number;
 }
@@ -101,48 +100,26 @@ function renderOutputItem(item: Record<string, unknown>, phase: Phase): Msg | nu
 export default function App() {
   const [calls, setCalls] = useState<ApiCall[]>([]);
   const [position, setPosition] = useState({ x: 5, y: 5 });
-  const [catState, setCatState] = useState("idle");
+  const [crabState, setCrabState] = useState("idle");
   const [alert, setAlert] = useState(false);
   const [activity, setActivity] = useState({ type: "idle", detail: "" });
   const [chatInput, setChatInput] = useState("");
   const [conversing, setConversing] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const [countdown, setCountdown] = useState(0);
   const [hasNew, setHasNew] = useState(false);
-  const [catName, setCatName] = useState("the cat");
-  const [petType, setPetType] = useState("cat");
+  const [crabName, setCrabName] = useState("the crab");
   const [focusMode, setFocusMode] = useState(false);
-  const [focusTopic, setFocusTopic] = useState("");
-  const [focusRemaining, setFocusRemaining] = useState(0);
-  const [focusFormOpen, setFocusFormOpen] = useState(false);
-  const [focusFormTopic, setFocusFormTopic] = useState("");
-  const [focusFormDuration, setFocusFormDuration] = useState(30);
-  const [paused, setPaused] = useState(false);
-  const [pace, setPace] = useState(5);
-  const [openLoops, setOpenLoops] = useState<Array<{ text: string; timestamp: string }>>([]);
-  type FeedFilter = "all" | "important" | "thoughts";
-  const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
-  const [toolCollapsed, setToolCollapsed] = useState(true);
-  const [memPanelOpen, setMemPanelOpen] = useState(false);
-  const [memQuery, setMemQuery] = useState("");
-  const [memKind, setMemKind] = useState("");
-  const [memResults, setMemResults] = useState<Array<{
-    id: string; timestamp: string; kind: string; content: string; importance: number;
-    cluster: string; cluster_label: string;
-  }>>([]);
-  const [awaySummary, setAwaySummary] = useState("");
-  const lastActiveRef = useRef<string>(new Date().toISOString());
-  const [cats, setCats] = useState<CatInfo[]>([]);
-  const [activeCat, setActiveCat] = useState("");
+  const [crabs, setCrabs] = useState<CrabInfo[]>([]);
+  const [activeCrab, setActiveCrab] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<GameWorldHandle>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const catParam = activeCat ? `?cat=${activeCat}` : "";
+  const crabParam = activeCrab ? `?crab=${activeCrab}` : "";
 
-  const connectWs = useCallback((catId: string) => {
+  const connectWs = useCallback((crabId: string) => {
     // Close existing connection
     if (wsRef.current) {
       wsRef.current.onmessage = null;
@@ -153,7 +130,7 @@ export default function App() {
     }
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${location.host}/ws/${catId}`);
+    const ws = new WebSocket(`${protocol}//${location.host}/ws/${crabId}`);
     wsRef.current = ws;
 
     ws.onmessage = (ev) => {
@@ -161,17 +138,12 @@ export default function App() {
       if (msg.event === "api_call") setCalls((prev) => [...prev, msg.data]);
       if (msg.event === "position") setPosition(msg.data);
       if (msg.event === "status") {
-        setCatState(msg.data.state);
+        setCrabState(msg.data.state);
         if (msg.data.state === "thinking") setAlert(false);
       }
       if (msg.event === "alert") setAlert(true);
       if (msg.event === "activity") setActivity(msg.data);
-      if (msg.event === "focus_mode") {
-        setFocusMode(msg.data.enabled);
-        if (msg.data.topic) setFocusTopic(msg.data.topic);
-        if (!msg.data.enabled) { setFocusTopic(""); setFocusRemaining(0); }
-      }
-      if (msg.event === "paused") setPaused(msg.data.paused);
+      if (msg.event === "focus_mode") setFocusMode(msg.data.enabled);
       if (msg.event === "conversation") {
         if (msg.data.state === "waiting") {
           setConversing(true);
@@ -184,21 +156,21 @@ export default function App() {
     };
 
     ws.onerror = () => {
-      console.warn(`WebSocket error for cat ${catId}`);
+      console.warn(`WebSocket error for crab ${crabId}`);
     };
 
     ws.onclose = () => {
       // Reconnect after a brief delay if this is still the active WS
       if (wsRef.current === ws) {
         setTimeout(() => {
-          if (wsRef.current === ws) connectWs(catId);
+          if (wsRef.current === ws) connectWs(crabId);
         }, 3000);
       }
     };
   }, []);
 
-  const loadCatState = useCallback(async (catId: string) => {
-    const q = `?cat=${catId}`;
+  const loadCrabState = useCallback(async (crabId: string) => {
+    const q = `?crab=${crabId}`;
     // Fetch historical calls first (before WS connects) to avoid race
     try {
       const [rawRes, statusRes, idRes] = await Promise.all([
@@ -212,35 +184,28 @@ export default function App() {
       setCalls(rawData);
       if (statusData.position) setPosition(statusData.position);
       if (statusData.focus_mode !== undefined) setFocusMode(statusData.focus_mode);
-      if (statusData.focus_topic !== undefined) setFocusTopic(statusData.focus_topic);
-      if (statusData.focus_remaining !== undefined) setFocusRemaining(Math.round(statusData.focus_remaining));
-      if (statusData.paused !== undefined) setPaused(statusData.paused);
-      if (statusData.pace !== undefined) setPace(statusData.pace);
-      if (statusData.open_loops) setOpenLoops(statusData.open_loops);
-      setCatState(statusData.state || "idle");
-      if (idData.name) setCatName(idData.name);
-      if (idData.pet_type) setPetType(idData.pet_type);
+      setCrabState(statusData.state || "idle");
+      if (idData.name) setCrabName(idData.name);
     } catch {
       // silently ignore fetch errors
     }
   }, []);
 
-  // Initial mount: fetch cats list, load state, then connect WS
+  // Initial mount: fetch crabs list, load state, then connect WS
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/cats");
-        const list: CatInfo[] = await res.json();
+        const res = await fetch("/api/crabs");
+        const list: CrabInfo[] = await res.json();
         if (cancelled) return;
-        setCats(list);
+        setCrabs(list);
         if (list.length > 0) {
           const first = list[0].id;
-          setActiveCat(first);
-          setCatName(list[0].name);
-          setPetType(list[0].pet_type || "cat");
+          setActiveCrab(first);
+          setCrabName(list[0].name);
           // Load historical data first, then connect WS for live events
-          await loadCatState(first);
+          await loadCrabState(first);
           if (!cancelled) connectWs(first);
         }
       } catch { /* server not ready yet */ }
@@ -253,12 +218,12 @@ export default function App() {
         wsRef.current.close();
       }
     };
-  }, [connectWs, loadCatState]);
+  }, [connectWs, loadCrabState]);
 
-  // Switch cat
-  const switchCat = useCallback((catId: string) => {
-    if (catId === activeCat) return;
-    setActiveCat(catId);
+  // Switch crab
+  const switchCrab = useCallback((crabId: string) => {
+    if (crabId === activeCrab) return;
+    setActiveCrab(crabId);
 
     // Reset state
     setConversing(false);
@@ -267,23 +232,20 @@ export default function App() {
     setActivity({ type: "idle", detail: "" });
     setHasNew(false);
 
-    // Update cat name and pet type immediately
-    const cat = cats.find((c) => c.id === catId);
-    if (cat) {
-      setCatName(cat.name);
-      setPetType(cat.pet_type || "cat");
-    }
+    // Update crab name immediately
+    const crab = crabs.find((c) => c.id === crabId);
+    if (crab) setCrabName(crab.name);
 
     // Load historical data first, then connect WS for live events
-    loadCatState(catId).then(() => connectWs(catId));
-  }, [activeCat, cats, loadCatState, connectWs]);
+    loadCrabState(crabId).then(() => connectWs(crabId));
+  }, [activeCrab, crabs, loadCrabState, connectWs]);
 
-  // Poll cats list periodically to keep states fresh
+  // Poll crabs list periodically to keep states fresh
   useEffect(() => {
     const interval = setInterval(() => {
-      fetch("/api/cats")
+      fetch("/api/crabs")
         .then((r) => r.json())
-        .then(setCats)
+        .then(setCrabs)
         .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);
@@ -308,17 +270,17 @@ export default function App() {
 
   // Send canvas snapshot to backend when thinking starts
   useEffect(() => {
-    if (catState === "thinking" && gameRef.current) {
+    if (crabState === "thinking" && gameRef.current) {
       const dataUrl = gameRef.current.snapshot();
       if (dataUrl) {
-        fetch(`/api/snapshot${catParam}`, {
+        fetch(`/api/snapshot${crabParam}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ image: dataUrl }),
         }).catch(() => {});
       }
     }
-  }, [catState, catParam]);
+  }, [crabState, crabParam]);
 
   // Only auto-scroll if user is already near the bottom; otherwise show indicator
   useEffect(() => {
@@ -344,67 +306,10 @@ export default function App() {
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Detect "while you were away" — tab visibility changes
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        const lastActive = new Date(lastActiveRef.current);
-        const now = new Date();
-        const minutesAway = (now.getTime() - lastActive.getTime()) / 60000;
-        if (minutesAway >= 5) {
-          const params = new URLSearchParams({ since: lastActiveRef.current });
-          if (activeCat) params.set("cat", activeCat);
-          fetch(`/api/activity-since?${params}`)
-            .then((r) => r.json())
-            .then((data) => {
-              if (data.summary) setAwaySummary(data.summary);
-            })
-            .catch(() => {});
-        }
-        lastActiveRef.current = now.toISOString();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, [activeCat]);
-
-  // Keyboard shortcut: "/" or Cmd+K to focus input
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
-      if (e.key === "/" || (e.metaKey && e.key === "k")) {
-        e.preventDefault();
-        inputRef.current?.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, []);
-
-  const quickActions = [
-    { label: "Brain dump", prefix: "Brain dump: ", icon: "🧠" },
-    { label: "I'm stuck", prefix: "I'm stuck on ", icon: "🪢" },
-    { label: "Small win", prefix: "Small win: ", icon: "🎯" },
-    { label: "Remember", prefix: "Remember: ", icon: "📌" },
-    { label: "What's next", prefix: "What should I do next?", icon: "→" },
-  ];
-
-  const quickCapture = (prefix: string) => {
-    setChatInput(prefix);
-    inputRef.current?.focus();
-  };
-
   const sendMessage = () => {
     const text = chatInput.trim();
     if (!text) return;
-    // Optimistic echo — show user's message immediately
-    setCalls((prev) => [...prev, {
-      timestamp: new Date().toISOString(),
-      instructions: "",
-      input: [{ role: "user", content: text }],
-      output: [],
-    }]);
-    fetch(`/api/message${catParam}`, {
+    fetch(`/api/message${crabParam}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
@@ -412,80 +317,13 @@ export default function App() {
     setChatInput("");
   };
 
-  const searchMemories = () => {
-    const params = new URLSearchParams();
-    if (memQuery) params.set("query", memQuery);
-    if (memKind) params.set("kind", memKind);
-    params.set("limit", "15");
-    fetch(`/api/memories${catParam ? `?cat=${activeCat}&` : "?"}${params}`)
-      .then((r) => r.json())
-      .then((data) => setMemResults(data.memories || []))
-      .catch(() => {});
-  };
-
-  const memKindColor = (kind: string) => {
-    if (kind === "reflection") return "#7c3aed";
-    if (kind === "observation") return "#007aff";
-    if (kind === "conversation") return "#10b981";
-    return "#999";
-  };
-
-  const formatMemTime = (ts: string) => {
-    try {
-      const d = new Date(ts);
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch { return ""; }
-  };
-
   const toggleFocusMode = () => {
-    if (focusMode) {
-      // Turn off
-      setFocusMode(false);
-      setFocusTopic("");
-      setFocusRemaining(0);
-      fetch(`/api/focus-mode${catParam}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: false }),
-      }).catch(() => {});
-    } else {
-      // Show form
-      setFocusFormOpen(true);
-    }
-  };
-
-  const submitFocusForm = () => {
-    setFocusFormOpen(false);
-    setFocusMode(true);
-    setFocusTopic(focusFormTopic);
-    fetch(`/api/focus-mode${catParam}`, {
+    const next = !focusMode;
+    setFocusMode(next);
+    fetch(`/api/focus-mode${crabParam}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        enabled: true,
-        topic: focusFormTopic,
-        duration_minutes: focusFormDuration,
-      }),
-    }).catch(() => {});
-    setFocusFormTopic("");
-  };
-
-  const togglePause = () => {
-    const next = !paused;
-    setPaused(next);
-    fetch(`/api/pause${catParam}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused: next }),
-    }).catch(() => {});
-  };
-
-  const setPaceValue = (val: number) => {
-    setPace(val);
-    fetch(`/api/pace${catParam}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pace: val }),
+      body: JSON.stringify({ enabled: next }),
     }).catch(() => {});
   };
 
@@ -542,7 +380,6 @@ export default function App() {
   });
 
   const stateLabel = (state: string) => {
-    if (paused) return "paused";
     if (state === "thinking") return "thinking";
     if (state === "reflecting") return "reflecting";
     if (state === "planning") return "planning";
@@ -550,7 +387,6 @@ export default function App() {
   };
 
   const stateColor = (state: string) => {
-    if (paused) return "#f59e0b";
     if (state === "thinking") return "#007aff";
     if (state === "reflecting") return "#7c3aed";
     if (state === "planning") return "#0d9488";
@@ -566,21 +402,21 @@ export default function App() {
       <div style={twoPane}>
         {/* Left pane — Game world */}
         <div style={gamePane}>
-          <GameWorld ref={gameRef} position={position} state={catState} alert={alert} activity={activity} conversing={conversing} petType={petType} />
+          <GameWorld ref={gameRef} position={position} state={crabState} alert={alert} activity={activity} conversing={conversing} />
         </div>
 
         {/* Right pane — Chat feed */}
         <div style={chatPane}>
-          {/* Cat switcher */}
-          {cats.length > 1 && (
+          {/* Crab switcher */}
+          {crabs.length > 1 && (
             <div style={switcherBar}>
-              {cats.map((c) => {
-                const isActive = c.id === activeCat;
+              {crabs.map((c) => {
+                const isActive = c.id === activeCrab;
                 return (
                   <button
                     key={c.id}
                     style={isActive ? switcherBtnActive : switcherBtnInactive}
-                    onClick={() => switchCat(c.id)}
+                    onClick={() => switchCrab(c.id)}
                   >
                     <span>{c.name}</span>
                     <span style={{ ...switcherState, color: isActive ? "rgba(255,255,255,0.8)" : stateColor(c.state) }}>
@@ -591,104 +427,16 @@ export default function App() {
               })}
             </div>
           )}
-          {awaySummary && (
-            <div style={awayBanner}>
-              <span>{awaySummary}</span>
-              <button style={awayCloseBtn} onClick={() => setAwaySummary("")}>×</button>
-            </div>
-          )}
-          {openLoops.length > 0 && (
-            <div style={loopsBanner}>
-              <span style={loopsIcon}>🔄</span>
-              <div style={loopsList}>
-                {openLoops.slice(-3).map((loop, i) => (
-                  <span key={i} style={loopItem}>{loop.text}</span>
-                ))}
-              </div>
-              <span style={loopsHint}>unfinished threads</span>
-            </div>
-          )}
-          {memPanelOpen && (
-            <div style={memPanel}>
-              <div style={memPanelHeader}>
-                <span style={{ fontWeight: 700, fontSize: 13 }}>Memory Search</span>
-                <button style={memCloseBtn} onClick={() => setMemPanelOpen(false)}>×</button>
-              </div>
-              <div style={memSearchRow}>
-                <input
-                  style={memInput}
-                  type="text"
-                  placeholder="Search memories..."
-                  value={memQuery}
-                  onChange={(e) => setMemQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") searchMemories(); }}
-                />
-                <select
-                  style={memKindSelect}
-                  value={memKind}
-                  onChange={(e) => setMemKind(e.target.value)}
-                >
-                  <option value="">All types</option>
-                  <option value="observation">Observations</option>
-                  <option value="conversation">Conversations</option>
-                  <option value="reflection">Reflections</option>
-                  <option value="system">System</option>
-                </select>
-                <button style={memSearchBtn} onClick={searchMemories}>Search</button>
-              </div>
-              <div style={memResultsList}>
-                {memResults.length === 0 && (
-                  <div style={{ color: "#999", fontSize: 12, padding: 8 }}>No memories found</div>
-                )}
-                {memResults.map((m) => (
-                  <div key={m.id} style={memItem}>
-                    <div style={memItemMeta}>
-                      <span style={{ color: memKindColor(m.kind), fontWeight: 600 }}>{m.kind}</span>
-                      {m.cluster_label && (
-                        <span style={clusterTag} title={`Cluster: ${m.cluster_label}`}>{m.cluster_label}</span>
-                      )}
-                      <span style={{ color: "#999" }}> · imp:{m.importance}</span>
-                      <span style={{ color: "#bbb", marginLeft: "auto" }}>{formatMemTime(m.timestamp)}</span>
-                    </div>
-                    <div style={memItemContent}>{m.content}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div style={filterBar}>
-            {(["all", "important", "thoughts"] as FeedFilter[]).map((f) => (
-              <button
-                key={f}
-                style={feedFilter === f ? filterBtnActive : filterBtnInactive}
-                onClick={() => setFeedFilter(f)}
-              >
-                {f === "all" ? "All" : f === "important" ? "Important" : "Thoughts"}
-              </button>
-            ))}
-          </div>
           <div ref={scrollRef} style={chatScroll}>
           <div style={container}>
             {messages.length === 0 && (
               <div style={emptyState}>
                 <div style={emptyIcon}>~</div>
                 <div style={emptyTitle}>Waiting for thoughts...</div>
-                <div style={emptySubtitle}>{catName} is getting ready</div>
+                <div style={emptySubtitle}>{crabName} is getting ready</div>
               </div>
             )}
-            {messages.filter((msg) => {
-              if (feedFilter === "all") return true;
-              // "important" filter: hide tool calls/results, keep thoughts/reflections/planning/conversation
-              if (msg.side === "system") return feedFilter === "important" ? msg.phase !== "normal" : false;
-              if (msg.isRespond) return true; // always show conversation
-              if (msg.side === "left") return true; // always show nudges/inputs
-              // Right side: hide tool calls (start with "$ " or "[" and end with "]")
-              const t = msg.text;
-              const isTool = t.startsWith("$ ") || (t.startsWith("[") && !t.startsWith("[image]") && t.includes("]") && t.indexOf("]") < 40);
-              if (feedFilter === "important") return !isTool;
-              // "thoughts" filter: only show non-tool right-side messages
-              return !isTool;
-            }).map((msg, i) => {
+            {messages.map((msg, i) => {
               if (msg.side === "system") {
                 const sBlock = msg.phase === "dream" ? dreamSystemBlock
                   : msg.phase === "planning" ? planSystemBlock : systemBlock;
@@ -757,89 +505,25 @@ export default function App() {
               New messages
             </div>
           )}
-          <div style={quickCaptureBar}>
-            {quickActions.map((a) => (
-              <button
-                key={a.label}
-                style={quickChip}
-                onClick={() => quickCapture(a.prefix)}
-                title={`Pre-fill: "${a.prefix}"`}
-              >
-                <span style={quickChipIcon}>{a.icon}</span>
-                <span>{a.label}</span>
-              </button>
-            ))}
-          </div>
           <div style={inputBar}>
             {conversing && countdown > 0 && (
               <div style={countdownStyle}>{countdown}s</div>
             )}
             <button
-              style={paused ? pauseBtnActive : pauseBtnInactive}
-              onClick={togglePause}
-              title={paused ? "Resume thinking" : "Pause thinking"}
-            >
-              {paused ? "▶" : "⏸"}
-            </button>
-            <button
               style={focusMode ? focusBtnActive : focusBtnInactive}
               onClick={toggleFocusMode}
-              title={focusMode ? `Focused${focusTopic ? " on " + focusTopic : ""} — click to turn off` : "Click to focus"}
+              title={focusMode ? "Focus mode ON — click to turn off" : "Focus mode OFF — click to turn on"}
             >
-              {focusMode ? (focusTopic ? `Focus: ${focusTopic.slice(0, 15)}` : "Focused") : "Focus"}
-            </button>
-            {focusFormOpen && (
-              <div style={focusFormPopup}>
-                <input
-                  style={focusFormInput}
-                  type="text"
-                  placeholder="Topic (optional)"
-                  value={focusFormTopic}
-                  onChange={(e) => setFocusFormTopic(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitFocusForm(); }}
-                  autoFocus
-                />
-                <select
-                  style={focusFormSelect}
-                  value={focusFormDuration}
-                  onChange={(e) => setFocusFormDuration(Number(e.target.value))}
-                >
-                  <option value={15}>15 min</option>
-                  <option value={30}>30 min</option>
-                  <option value={60}>60 min</option>
-                  <option value={0}>No limit</option>
-                </select>
-                <button style={focusFormGoBtn} onClick={submitFocusForm}>Go</button>
-                <button style={focusFormCancelBtn} onClick={() => setFocusFormOpen(false)}>×</button>
-              </div>
-            )}
-            <select
-              style={paceSelect}
-              value={pace}
-              onChange={(e) => setPaceValue(Number(e.target.value))}
-              title="Thinking pace"
-            >
-              <option value={3}>Fast (3s)</option>
-              <option value={5}>Normal (5s)</option>
-              <option value={15}>Slow (15s)</option>
-              <option value={45}>Quiet (45s)</option>
-            </select>
-            <button
-              style={memBtn}
-              onClick={() => { setMemPanelOpen(!memPanelOpen); if (!memPanelOpen) searchMemories(); }}
-              title="Search creature's memory"
-            >
-              Mem
+              Focus
             </button>
             <form
               style={inputForm}
               onSubmit={(e) => { e.preventDefault(); sendMessage(); }}
             >
               <input
-                ref={inputRef}
                 style={inputField}
                 type="text"
-                placeholder={conversing ? `Reply to ${catName}...` : `Say something to ${catName}...  (press / to focus)`}
+                placeholder={conversing ? `Reply to ${crabName}...` : `Say something to ${crabName}...`}
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
               />
@@ -918,45 +602,11 @@ const chatPane: React.CSSProperties = {
   flexDirection: "column",
   background: SURFACE,
   borderLeft: `1px solid ${BORDER}`,
-  position: "relative",
 };
 
 const chatScroll: React.CSSProperties = {
   flex: 1,
   overflow: "auto",
-};
-
-const filterBar: React.CSSProperties = {
-  display: "flex",
-  gap: 4,
-  padding: "6px 16px",
-  borderBottom: `1px solid ${BORDER}`,
-  background: "#fff",
-  flexShrink: 0,
-};
-
-const filterBtnActive: React.CSSProperties = {
-  padding: "4px 12px",
-  borderRadius: 6,
-  border: `1px solid ${DARK_MID}`,
-  background: DARK_MID,
-  color: "#fff",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-const filterBtnInactive: React.CSSProperties = {
-  padding: "4px 12px",
-  borderRadius: 6,
-  border: `1px solid ${BORDER}`,
-  background: "transparent",
-  color: "#888",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
 };
 
 const container: React.CSSProperties = {
@@ -993,7 +643,7 @@ const emptySubtitle: React.CSSProperties = {
   color: "#aaa",
 };
 
-// ── Cat switcher ──
+// ── Crab switcher ──
 const switcherBar: React.CSSProperties = {
   display: "flex",
   gap: 6,
@@ -1241,311 +891,6 @@ const focusBtnActive: React.CSSProperties = {
   fontWeight: 600,
   cursor: "pointer",
   whiteSpace: "nowrap",
-};
-
-const pauseBtnInactive: React.CSSProperties = {
-  padding: "8px 10px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: SURFACE,
-  color: "#999",
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  lineHeight: 1,
-};
-
-const pauseBtnActive: React.CSSProperties = {
-  padding: "8px 10px",
-  borderRadius: 10,
-  border: "1px solid #10b981",
-  background: "#10b981",
-  color: "#fff",
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  lineHeight: 1,
-};
-
-const paceSelect: React.CSSProperties = {
-  padding: "8px 10px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: SURFACE,
-  color: "#555",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-  outline: "none",
-  fontFamily: MONO,
-};
-
-const memBtn: React.CSSProperties = {
-  padding: "8px 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: SURFACE,
-  color: "#7c3aed",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-// ── Quick capture ──
-const quickCaptureBar: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "6px 16px",
-  borderTop: `1px solid ${BORDER}`,
-  background: "#fff",
-  flexShrink: 0,
-};
-
-const quickChip: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 4,
-  padding: "5px 10px",
-  borderRadius: 8,
-  border: `1px solid ${BORDER}`,
-  background: SURFACE,
-  color: "#555",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  transition: "all 0.15s",
-};
-
-const quickChipIcon: React.CSSProperties = {
-  fontSize: 12,
-};
-
-const memPanel: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  borderBottom: `1px solid ${BORDER}`,
-  background: "#fafafa",
-  maxHeight: 280,
-  flexShrink: 0,
-};
-
-const memPanelHeader: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "8px 16px 4px",
-};
-
-const memCloseBtn: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  fontSize: 18,
-  color: "#999",
-  cursor: "pointer",
-  padding: "0 4px",
-};
-
-const clusterTag: React.CSSProperties = {
-  display: "inline-block",
-  padding: "1px 6px",
-  borderRadius: 6,
-  background: "#ede9fe",
-  color: "#7c3aed",
-  fontSize: 10,
-  fontWeight: 600,
-  marginLeft: 6,
-  maxWidth: 100,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  verticalAlign: "middle",
-};
-
-const memSearchRow: React.CSSProperties = {
-  display: "flex",
-  gap: 6,
-  padding: "4px 16px 8px",
-};
-
-const memInput: React.CSSProperties = {
-  flex: 1,
-  padding: "6px 10px",
-  borderRadius: 8,
-  border: `1px solid ${BORDER}`,
-  fontSize: 12,
-  fontFamily: MONO,
-  outline: "none",
-};
-
-const memKindSelect: React.CSSProperties = {
-  padding: "6px 8px",
-  borderRadius: 8,
-  border: `1px solid ${BORDER}`,
-  fontSize: 11,
-  background: "#fff",
-  color: "#555",
-  outline: "none",
-};
-
-const memSearchBtn: React.CSSProperties = {
-  padding: "6px 14px",
-  borderRadius: 8,
-  border: "none",
-  background: DARK_MID,
-  color: "#fff",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-};
-
-const memResultsList: React.CSSProperties = {
-  overflow: "auto",
-  padding: "0 16px 8px",
-  maxHeight: 180,
-};
-
-const memItem: React.CSSProperties = {
-  padding: "6px 0",
-  borderBottom: `1px solid ${BORDER}`,
-};
-
-const memItemMeta: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  fontSize: 10,
-  marginBottom: 2,
-};
-
-const memItemContent: React.CSSProperties = {
-  fontSize: 12,
-  color: "#333",
-  lineHeight: 1.4,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-const awayBanner: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "10px 16px",
-  background: "#eff6ff",
-  borderBottom: `1px solid #bfdbfe`,
-  fontSize: 13,
-  color: "#1e40af",
-  fontWeight: 500,
-  flexShrink: 0,
-};
-
-const awayCloseBtn: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  fontSize: 18,
-  color: "#1e40af",
-  cursor: "pointer",
-  padding: "0 4px",
-};
-
-const loopsBanner: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "8px 16px",
-  background: "#fefce8",
-  borderBottom: `1px solid #fde68a`,
-  fontSize: 12,
-  color: "#854d0e",
-  flexShrink: 0,
-};
-
-const loopsIcon: React.CSSProperties = {
-  fontSize: 14,
-  flexShrink: 0,
-};
-
-const loopsList: React.CSSProperties = {
-  display: "flex",
-  gap: 8,
-  overflow: "hidden",
-  flex: 1,
-};
-
-const loopItem: React.CSSProperties = {
-  display: "inline-block",
-  padding: "2px 8px",
-  borderRadius: 6,
-  background: "#fef9c3",
-  border: `1px solid #fde68a`,
-  fontSize: 11,
-  fontWeight: 500,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  maxWidth: 200,
-};
-
-const loopsHint: React.CSSProperties = {
-  fontSize: 10,
-  color: "#a16207",
-  flexShrink: 0,
-  fontStyle: "italic",
-  opacity: 0.6,
-};
-
-const focusFormPopup: React.CSSProperties = {
-  display: "flex",
-  gap: 4,
-  alignItems: "center",
-  padding: "4px 6px",
-  borderRadius: 10,
-  border: `1px solid #ea580c`,
-  background: "#fff7ed",
-};
-
-const focusFormInput: React.CSSProperties = {
-  width: 100,
-  padding: "4px 8px",
-  borderRadius: 6,
-  border: `1px solid ${BORDER}`,
-  fontSize: 11,
-  fontFamily: MONO,
-  outline: "none",
-};
-
-const focusFormSelect: React.CSSProperties = {
-  padding: "4px 6px",
-  borderRadius: 6,
-  border: `1px solid ${BORDER}`,
-  fontSize: 11,
-  background: "#fff",
-  outline: "none",
-};
-
-const focusFormGoBtn: React.CSSProperties = {
-  padding: "4px 10px",
-  borderRadius: 6,
-  border: "none",
-  background: "#ea580c",
-  color: "#fff",
-  fontSize: 11,
-  fontWeight: 600,
-  cursor: "pointer",
-};
-
-const focusFormCancelBtn: React.CSSProperties = {
-  padding: "4px 6px",
-  borderRadius: 6,
-  border: "none",
-  background: "transparent",
-  color: "#999",
-  fontSize: 14,
-  cursor: "pointer",
 };
 
 const newMsgPill: React.CSSProperties = {

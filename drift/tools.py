@@ -63,7 +63,7 @@ _SANDBOX = os.path.join(os.path.dirname(__file__), "pysandbox.py")
 
 
 def _venv_dir(env_root: str) -> str:
-    """Path to the cat's virtual environment."""
+    """Path to the crab's virtual environment."""
     return os.path.join(os.path.realpath(env_root), ".venv")
 
 
@@ -78,11 +78,11 @@ def _venv_bin(env_root: str) -> str:
 
 
 def ensure_venv(env_root: str):
-    """Create the cat's venv if it doesn't exist. Called once on startup."""
+    """Create the crab's venv if it doesn't exist. Called once on startup."""
     venv = _venv_dir(env_root)
     if os.path.isfile(_venv_python(env_root)):
         return
-    logger.info(f"Creating cat venv at {venv}...")
+    logger.info(f"Creating crab venv at {venv}...")
     uv = shutil.which("uv")
     if uv:
         subprocess.run(
@@ -103,7 +103,7 @@ def ensure_venv(env_root: str):
             os.symlink("python3", python_path)
         except OSError:
             pass
-    logger.info("Cat venv created.")
+    logger.info("Crab venv created.")
 
 
 def _is_safe_command(command: str) -> str | None:
@@ -152,7 +152,7 @@ def _is_safe_command(command: str) -> str | None:
 def _rewrite_python_cmd(command: str, env_root: str) -> str | None:
     """If command is a python invocation, rewrite to run through the sandbox.
 
-    Uses the cat's venv python so installed packages are available.
+    Uses the crab's venv python so installed packages are available.
     Returns the rewritten command, or None if it's not a python command.
     """
     stripped = command.strip()
@@ -263,7 +263,7 @@ def run_command(command: str, env_root: str) -> str:
         return output
 
     except subprocess.TimeoutExpired:
-        return "Error: command timed out (60s limit)"
+        return "Error: command timed out (15s limit)"
     except Exception as e:
         return f"Error: {e}"
 

@@ -1,6 +1,6 @@
 # Drift Configuration
-provider: "openrouter"          # "openai" | "openrouter" | "custom"
-model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+provider: "openai"              # "openai" | "openrouter" | "custom"
+model: "gpt-4.1"
 api_key: null                   # set here or via OPENAI_API_KEY / OPENROUTER_API_KEY env var
 base_url: null                  # auto-set for known providers; required for "custom"
 ollama_api_key: null            # for Ollama cloud web search (minimax:cloud etc.) — OLLAMA_API_KEY env

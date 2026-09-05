@@ -1,4 +1,4 @@
-"""Identity generation — every cat is unique."""
+"""Identity generation — every crab is unique."""
 
 import hashlib
 import json
@@ -99,17 +99,6 @@ TEMPERAMENTS = [
     "energetic and prolific",
 ]
 
-PET_TYPES = [
-    "cat",
-    "dog",
-    "hamster",
-    "owl",
-    "fox",
-    "rabbit",
-    "octopus",
-    "penguin",
-]
-
 
 def _derive_traits(seed_bytes: bytes) -> dict:
     """Deterministically derive personality traits from raw seed bytes."""
@@ -201,7 +190,7 @@ def _collect_entropy() -> bytes:
     return hashlib.sha256(bytes(entropy_pool)).digest()
 
 
-def _display_birth(name: str, pet_type: str, genome_hex: str, traits: dict):
+def _display_birth(name: str, genome_hex: str, traits: dict):
     """Print the birth sequence to the terminal."""
     print()
     print("  Initializing...")
@@ -219,8 +208,6 @@ def _display_birth(name: str, pet_type: str, genome_hex: str, traits: dict):
     time.sleep(0.3)
 
     print("  decoded:")
-    print(f"    pet         : {pet_type}")
-    time.sleep(0.15)
     print(f"    temperament : {traits['temperament']}")
     time.sleep(0.2)
     print(f"    style       : {traits['thinking_styles'][0]}")
@@ -233,7 +220,7 @@ def _display_birth(name: str, pet_type: str, genome_hex: str, traits: dict):
 
     print()
     time.sleep(0.3)
-    print(f"  {name} the {pet_type} is awake.")
+    print(f"  {name} is awake.")
     print()
 
 
@@ -264,19 +251,7 @@ def create_identity() -> dict:
     print()
     name = input("  What will you name it? > ").strip()
     if not name:
-        name = "Drifter"
-
-    print()
-    print("  What kind of pet?")
-    for i, pt in enumerate(PET_TYPES, 1):
-        print(f"    {i}. {pt}")
-    pet_choice = input("  Pick a number (1-8) or type a custom animal > ").strip()
-    if pet_choice.isdigit() and 1 <= int(pet_choice) <= len(PET_TYPES):
-        pet_type = PET_TYPES[int(pet_choice) - 1]
-    elif pet_choice:
-        pet_type = pet_choice.lower().strip()
-    else:
-        pet_type = "cat"
+        name = "Crab"
 
     # Set environment path to {name}_box/
     project_root = os.path.dirname(os.path.dirname(__file__))
@@ -290,7 +265,6 @@ def create_identity() -> dict:
 
     identity = {
         "name": name,
-        "pet_type": pet_type,
         "genome": genome_hex,
         "traits": traits,
         "born": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -301,5 +275,5 @@ def create_identity() -> dict:
     with open(path, "w") as f:
         json.dump(identity, f, indent=2)
 
-    _display_birth(name, pet_type, genome_hex, traits)
+    _display_birth(name, genome_hex, traits)
     return identity

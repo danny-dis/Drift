@@ -1,4 +1,4 @@
-"""Entry point — multi-cat discovery + onboarding + starts the server."""
+"""Entry point — multi-crab discovery + onboarding + starts the server."""
 
 import glob
 import json
@@ -24,15 +24,15 @@ logging.basicConfig(
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
-def _cat_id_from_box(box_path: str) -> str:
-    """Derive cat ID from box directory name: coral_box -> coral."""
+def _crab_id_from_box(box_path: str) -> str:
+    """Derive crab ID from box directory name: coral_box -> coral."""
     dirname = os.path.basename(box_path)
     if dirname.endswith("_box"):
         return dirname[:-4]
     return dirname
 
 
-def _discover_cats() -> dict[str, Brain]:
+def _discover_crabs() -> dict[str, Brain]:
     """Discover all *_box/ dirs, migrate legacy environment/, return brains dict."""
     brains: dict[str, Brain] = {}
 
@@ -42,7 +42,7 @@ def _discover_cats() -> dict[str, Brain]:
     if os.path.isfile(legacy_identity):
         with open(legacy_identity, "r") as f:
             identity = json.load(f)
-        name = identity.get("name", "cat").lower()
+        name = identity.get("name", "crab").lower()
         new_path = os.path.join(PROJECT_ROOT, f"{name}_box")
         print(f"\n  Migrating environment/ -> {name}_box/...")
         shutil.move(legacy, new_path)
@@ -55,40 +55,40 @@ def _discover_cats() -> dict[str, Brain]:
         identity = load_identity_from(box_path)
         if not identity:
             continue
-        cat_id = _cat_id_from_box(box_path)
+        crab_id = _crab_id_from_box(box_path)
         brain = Brain(identity, box_path)
-        brains[cat_id] = brain
+        brains[crab_id] = brain
 
     return brains
 
 
 if __name__ == "__main__":
-    # Discover existing cats
-    brains = _discover_cats()
+    # Discover existing crabs
+    brains = _discover_crabs()
 
     if brains:
         names = [b.identity["name"] for b in brains.values()]
-        print(f"\n  Found {len(brains)} cat(s): {', '.join(names)}")
+        print(f"\n  Found {len(brains)} crab(s): {', '.join(names)}")
         answer = input("  Create a new one? (y/N) > ").strip().lower()
         if answer == "y":
             identity = create_identity()
-            cat_id = identity["name"].lower()
-            box_path = os.path.join(PROJECT_ROOT, f"{cat_id}_box")
+            crab_id = identity["name"].lower()
+            box_path = os.path.join(PROJECT_ROOT, f"{crab_id}_box")
             brain = Brain(identity, box_path)
-            brains[cat_id] = brain
+            brains[crab_id] = brain
     else:
-        print("\n  No cats found. Let's create one!")
+        print("\n  No crabs found. Let's create one!")
         identity = create_identity()
-        cat_id = identity["name"].lower()
-        box_path = os.path.join(PROJECT_ROOT, f"{cat_id}_box")
+        crab_id = identity["name"].lower()
+        box_path = os.path.join(PROJECT_ROOT, f"{crab_id}_box")
         brain = Brain(identity, box_path)
-        brains[cat_id] = brain
+        brains[crab_id] = brain
 
     # Initialize the app with all brains
     app = create_app(brains)
 
     names = [b.identity["name"] for b in brains.values()]
-    print(f"\n  Starting {len(brains)} cat(s): {', '.join(names)}")
+    print(f"\n  Starting {len(brains)} crab(s): {', '.join(names)}")
     print(f"  Open http://localhost:8000 to watch them think\n")
     uvicorn.run(
         app,

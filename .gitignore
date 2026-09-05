@@ -1,11 +1,12 @@
-node_modules/
-.turbo/
-*.exe
-.env
-*.log
-.DS_Store
 __pycache__/
 *.pyc
-*.egg-info/
-dist/
-build/
+.env
+.venv/
+node_modules/
+frontend/dist/
+hermitclaw.log.jsonl
+.DS_Store
+
+# Agent-generated content (unique to each crab)
+*_box/
+environment/

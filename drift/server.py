@@ -1,4 +1,4 @@
-"""FastAPI web server — API + WebSocket + serves frontend."""
+"""FastAPI web server — Drift organism API + WebSocket + frontend."""
 
 import asyncio
 import hashlib
@@ -15,38 +15,38 @@ from fastapi.staticfiles import StaticFiles
 from drift.brain import Brain
 from drift.config import config
 from drift.identity import _derive_traits
+from drift.organism_api import router as organism_router
 
 logger = logging.getLogger("drift.server")
 
 app = FastAPI(title="Drift")
-brains: dict[str, Brain] = {}  # crab_id -> Brain
+brains: dict[str, Brain] = {}
 
 
 def create_app(all_brains: dict[str, Brain]) -> FastAPI:
-    """Initialize the app with brains dict. Called from main.py."""
+    """Initialize the app with the running Drift organisms."""
     global brains
     brains = all_brains
+    app.state.drift_brains = brains
+    if organism_router not in app.router.routes:
+        app.include_router(organism_router)
     return app
 
 
 def _get_brain(request: Request) -> Brain:
-    """Look up brain by ?crab=ID query param, or default to first."""
+    """Look up brain by ?crab=ID for backwards compatibility."""
     crab_id = request.query_params.get("crab")
     if crab_id and crab_id in brains:
         return brains[crab_id]
     return next(iter(brains.values()))
 
 
-# CORS for development (Vite dev server)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# --- WebSocket ---
 
 
 @app.websocket("/ws/{crab_id}")
@@ -60,7 +60,7 @@ async def websocket_endpoint(ws: WebSocket, crab_id: str):
     logger.info(f"WebSocket client connected to {crab_id}")
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            await ws.receive_text()
     except WebSocketDisconnect:
         brain.remove_ws_client(ws)
         logger.info(f"WebSocket client disconnected from {crab_id}")
@@ -68,32 +68,26 @@ async def websocket_endpoint(ws: WebSocket, crab_id: str):
 
 @app.websocket("/ws")
 async def websocket_default(ws: WebSocket):
-    """Backwards-compatible /ws — connects to the first brain."""
     if not brains:
         await ws.close(code=4004)
         return
     brain = next(iter(brains.values()))
     await ws.accept()
     brain.add_ws_client(ws)
-    logger.info("WebSocket client connected (default)")
     try:
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
         brain.remove_ws_client(ws)
-        logger.info("WebSocket client disconnected (default)")
-
-
-# --- REST API ---
 
 
 @app.get("/api/crabs")
 async def get_crabs():
-    """List all running crabs."""
     return [
         {
             "id": crab_id,
             "name": brain.identity["name"],
+            "animal": brain.identity.get("animal", "crab"),
             "state": brain.state,
             "thought_count": brain.thought_count,
         }
@@ -103,9 +97,9 @@ async def get_crabs():
 
 @app.post("/api/crabs")
 async def create_crab(request: Request):
-    """Create a new crab at runtime."""
     body = await request.json()
     name = body.get("name", "").strip()
+    animal = body.get("animal", "crab").strip().lower()
     if not name:
         return {"ok": False, "error": "name is required"}
 
@@ -113,55 +107,42 @@ async def create_crab(request: Request):
     if crab_id in brains:
         return {"ok": False, "error": f"crab '{crab_id}' already exists"}
 
-    # Create box directory
     project_root = os.path.dirname(os.path.dirname(__file__))
     box_path = os.path.join(project_root, f"{crab_id}_box")
     os.makedirs(box_path, exist_ok=True)
-
-    # Generate identity with random entropy (no interactive keyboard mashing)
     seed_bytes = hashlib.sha256(
         f"{name}{time.time_ns()}{os.urandom(32).hex()}".encode()
     ).digest()
-    genome_hex = seed_bytes.hex()
-    traits = _derive_traits(seed_bytes)
-
     identity = {
         "name": name,
-        "genome": genome_hex,
-        "traits": traits,
+        "animal": animal,
+        "genome": seed_bytes.hex(),
+        "traits": _derive_traits(seed_bytes),
         "born": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-
     with open(os.path.join(box_path, "identity.json"), "w") as f:
         json.dump(identity, f, indent=2)
 
-    # Start the brain
     brain = Brain(identity, box_path)
     brains[crab_id] = brain
+    app.state.drift_brains = brains
     asyncio.create_task(brain.run())
-    logger.info(f"Created and started new crab: {name} ({crab_id})")
-
-    return {"ok": True, "id": crab_id, "name": name}
+    return {"ok": True, "id": crab_id, "name": name, "animal": animal}
 
 
 @app.get("/api/identity")
 async def get_identity(request: Request):
-    """Get the crab's identity."""
-    brain = _get_brain(request)
-    return brain.identity
+    return _get_brain(request).identity
 
 
 @app.get("/api/events")
 async def get_events(request: Request, limit: int = 100):
-    brain = _get_brain(request)
-    return brain.events[-limit:]
+    return _get_brain(request).events[-limit:]
 
 
 @app.get("/api/raw")
 async def get_raw(request: Request, limit: int = 20):
-    """Get raw API call history."""
-    brain = _get_brain(request)
-    return brain.api_calls[-limit:]
+    return _get_brain(request).api_calls[-limit:]
 
 
 @app.get("/api/status")
@@ -175,6 +156,7 @@ async def get_status(request: Request):
         "memory_count": len(brain.stream.memories) if brain.stream else 0,
         "model": config["model"],
         "name": brain.identity["name"],
+        "animal": brain.identity.get("animal", "crab"),
         "position": brain.position,
         "focus_mode": brain._focus_mode,
     }
@@ -182,7 +164,6 @@ async def get_status(request: Request):
 
 @app.post("/api/focus-mode")
 async def post_focus_mode(request: Request):
-    """Toggle focus mode on or off."""
     brain = _get_brain(request)
     body = await request.json()
     enabled = bool(body.get("enabled", False))
@@ -192,7 +173,6 @@ async def post_focus_mode(request: Request):
 
 @app.post("/api/message")
 async def post_message(request: Request):
-    """Receive a message from the user (voice from outside the room)."""
     brain = _get_brain(request)
     body = await request.json()
     text = body.get("text", "").strip()
@@ -207,7 +187,6 @@ async def post_message(request: Request):
 
 @app.post("/api/snapshot")
 async def post_snapshot(request: Request):
-    """Receive a canvas snapshot from the frontend."""
     brain = _get_brain(request)
     body = await request.json()
     brain.latest_snapshot = body.get("image")
@@ -243,8 +222,6 @@ async def get_file(request: Request, path: str):
         return {"path": path, "content": f"Error: {e}"}
 
 
-# --- Static frontend ---
-
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(frontend_dist):
     app.mount(
@@ -261,13 +238,9 @@ if os.path.isdir(frontend_dist):
         return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
-# --- Startup ---
-
-
 @app.on_event("startup")
 async def startup():
     async def _start_brains():
-        # Small delay so the server finishes binding the port first
         await asyncio.sleep(0.5)
         for crab_id, brain in brains.items():
             asyncio.create_task(brain.run())

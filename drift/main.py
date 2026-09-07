@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import uvicorn
 from drift.brain import Brain
 from drift.config import config
-from drift.context_guard import install as install_context_guard
 from drift.identity import load_identity_from, create_identity
 from drift.server import create_app
 
@@ -43,15 +42,11 @@ def _discover_organisms() -> dict[str, Brain]:
         identity = load_identity_from(box_path)
         if not identity:
             continue
-        # Existing identities are upgraded lazily; no data migration is required.
         identity.setdefault("animal", "crab")
         organism_id = _organism_id_from_box(box_path)
         brains[organism_id] = Brain(identity, box_path)
     return brains
 
-
-# Install the context boundary before any Brain instance starts thinking.
-install_context_guard(Brain)
 
 if __name__ == "__main__":
     brains = _discover_organisms()

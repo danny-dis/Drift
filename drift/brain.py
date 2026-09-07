@@ -33,8 +33,10 @@ from drift.prompts import (
 )
 from drift.providers import chat, chat_short
 from drift.receipt import ContextReceipt, ReceiptStore, to_dict
-from drift.task import TaskStore
+from drift.task import Task, TaskStore
 from drift.tools import execute_tool, ensure_venv
+from drift.watcher import GitWatcher
+from drift.attention import AttentionEconomy, generate_candidates, select_best_candidate, BudgetTracker
 
 logger = logging.getLogger("drift.brain")
 
@@ -164,19 +166,9 @@ class Brain:
 
     PLAN_INTERVAL = 10
 
-    # Mood-based tasks for autonomous operation
-    MOOD_TASKS = [
-        {"goal": "Explore a curious topic and write a research report",
-         "objective": "Pick something interesting, do web searches, write a report in research/"},
-        {"goal": "Deep-dive into an active project",
-         "objective": "Review projects.md, pick one project and push it forward"},
-        {"goal": "Build something useful",
-         "objective": "Write real code — a script, tool, or simulation that runs"},
-        {"goal": "Organize and synthesize findings",
-         "objective": "Update projects.md, organize files, review recent work"},
-        {"goal": "Challenge an assumption",
-         "objective": "Find a belief in the ledger and test it against evidence"},
-    ]
+    # Mood-based tasks are no longer used — attention economy handles
+    # task selection when no work is pending. Kept for reference.
+    # MOOD_TASKS = [...]
 
     def __init__(self, identity: dict, env_path: str):
         self.identity = identity
@@ -215,6 +207,23 @@ class Brain:
         self.tasks = TaskStore(self.env_path)
         self.receipts = ReceiptStore(self.env_path)
         self.compactor = Compactor(self.ledger, self.stream, config)
+        self.attention = AttentionEconomy(self.receipts)
+        self._init_watcher()
+
+    def _init_watcher(self) -> None:
+        """Create a GitWatcher and register all projects that have a local_path.
+
+        Projects with a local filesystem path are watched for new commits so
+        meaningful changes can trigger focused analysis tasks.
+        """
+        self.watcher = GitWatcher(self.ledger, self.tasks, config)
+        for project in self.ledger.data.get("projects", []):
+            if project.get("local_path"):
+                self.watcher.register_project(project["id"], project["local_path"])
+        logger.info(
+            "GitWatcher initialized with %d project(s)",
+            len(self.watcher.get_watched_projects()),
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -637,8 +646,14 @@ class Brain:
         # 1. Select task
         task = self.tasks.get_next_task()
         if task is None:
-            task = self._create_mood_task()
-            logger.info(f"No pending tasks, created mood task: {task.goal}")
+            task = self._create_attention_task()
+            if task:
+                logger.info(f"No pending tasks, created attention task: {task.goal}")
+
+        # If still no task (budget exhausted, no candidates), idle
+        if task is None:
+            logger.debug("No tasks available, idling")
+            return
 
         # 2. Build bounded context
         instructions, input_list, meta = self._build_task_context(task)
@@ -774,15 +789,17 @@ class Brain:
     # Task management
     # ------------------------------------------------------------------
 
-    def _create_mood_task(self) -> Task:
-        """Create an autonomous mood-based task when no work is pending."""
-        mood = random.choice(self.MOOD_TASKS)
-        return self.tasks.create_task(
-            goal=mood["goal"],
-            objective=mood["objective"],
-            priority=0.4,
-            estimated_cost=0.01,
-        )
+    def _create_attention_task(self) -> Task | None:
+        """Create a task using the attention economy.
+
+        Generates candidates from all signals, scores them, and selects
+        the highest-value one within budget. Returns None if no candidates
+        exist or budget is exhausted.
+        """
+        candidate = self.attention.generate_and_select(self)
+        if candidate is None:
+            return None
+        return self.attention.create_task_from_candidate(self, candidate)
 
     def _advance_task(self, task, created_files: set) -> None:
         """Advance the task phase based on outcomes."""
@@ -970,19 +987,39 @@ class Brain:
                 await self._emit("compaction", count=len(findings))
                 self.compactor.decay_stale_memories()
 
-            # 3. Bounded cognitive cycle
+            # 3. Git watcher scan — detect meaningful changes, create analysis tasks
+            if hasattr(self, 'watcher') and self.watcher.get_watched_projects():
+                try:
+                    changes = await asyncio.to_thread(self.watcher.scan_all)
+                    for change in changes:
+                        if self.watcher.should_analyze(change):
+                            task = self.watcher.create_analysis_task(change)
+                            if task:
+                                logger.info(
+                                    "GitWatcher created task %s for %s",
+                                    task.id, change.project_id,
+                                )
+                                await self._emit(
+                                    "git_analysis",
+                                    project=change.project_id,
+                                    commit=change.commit_hash[:8],
+                                )
+                except Exception as e:
+                    logger.warning("GitWatcher scan failed: %s", e)
+
+            # 4. Bounded cognitive cycle
             await self._think_once()
 
-            # 4. Reflection (bounded)
+            # 5. Reflection (bounded)
             if self.stream.should_reflect():
                 await self._reflect()
 
-            # 5. Planning (bounded, periodic)
+            # 6. Planning (bounded, periodic)
             self._cycles_since_plan += 1
             if self._cycles_since_plan >= Brain.PLAN_INTERVAL:
                 await self._plan()
 
-            # 6. Idle + broadcast state
+            # 7. Idle + broadcast state
             self.state = "idle"
             await self._broadcast(
                 {"event": "status", "data": {"state": "idle", "thought_count": self.thought_count}}

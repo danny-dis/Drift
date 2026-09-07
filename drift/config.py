@@ -31,6 +31,12 @@ def load_config() -> dict:
     config.setdefault("recency_decay_rate", 0.995)
     config.setdefault("max_tool_rounds", 12)
 
+    # Attention economy / compute-budget defaults
+    config.setdefault("attention_daily_budget", 1.0)
+    config.setdefault("attention_weekly_budget", 5.0)
+    config.setdefault("attention_emergency_reserve", 0.10)
+    config.setdefault("git_scan_cache_seconds", 300)
+
     project_root = os.path.dirname(os.path.dirname(__file__))
     if not os.path.isabs(config["environment_path"]):
         config["environment_path"] = os.path.join(project_root, config["environment_path"])

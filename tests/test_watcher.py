@@ -1,4 +1,5 @@
 """Tests for drift/watcher.py — continuous Git/project watcher."""
+import os
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from drift.watcher import (
     _is_commit_significant,
     _run_git,
 )
+from drift.memory import MemoryStream
 
 
 def test_run_git_in_non_repo(tmp_path):
@@ -130,3 +132,69 @@ def test_create_analysis_task(tmp_path):
     if task:
         assert task.goal.startswith("Analyze commit")
         assert task.project_id == "proj"
+
+
+def test_brain_wires_watcher(tmp_path):
+    """Verify Brain creates a GitWatcher and registers projects with local_path."""
+    from drift.brain import Brain
+
+    env_path = str(tmp_path / "env")
+    os.makedirs(env_path)
+    ledger = DriftLedger(env_path)
+    proj_path = str(tmp_path / "myproject")
+    os.makedirs(proj_path)
+    ledger.add_project(Project(id="p1", name="MyProject", repo="", local_path=proj_path))
+
+    brain = Brain(identity={"name": "test"}, env_path=env_path)
+    brain.stream = MemoryStream(env_path)
+    brain._init_stores()
+
+    assert hasattr(brain, 'watcher')
+    assert "p1" in brain.watcher.get_watched_projects()
+
+
+def test_brain_watcher_creates_tasks_from_commits(tmp_path):
+    """End-to-end: Brain scans repos with new commits and creates analysis tasks."""
+    import subprocess
+    from drift.brain import Brain
+
+    env_path = str(tmp_path / "env")
+    os.makedirs(env_path)
+
+    proj_path = str(tmp_path / "project")
+    os.makedirs(proj_path)
+    subprocess.run(["git", "init"], cwd=proj_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=proj_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=proj_path, capture_output=True)
+
+    # Create 6 files to trigger significance (>=5 files = +0.1, >=10 = +0.2)
+    for i in range(6):
+        Path(proj_path, f"file{i}.py").write_text(f"print('hello {i}')")
+    subprocess.run(["git", "add", "."], cwd=proj_path, capture_output=True)
+    # "Merge" prefix (+0.2) + "security" keyword (+0.3) + 6 files (+0.1) = 0.6
+    subprocess.run(["git", "commit", "-m", "Merge security fixes and schema migration"], cwd=proj_path, capture_output=True)
+
+    ledger = DriftLedger(env_path)
+    ledger.add_project(Project(id="proj", name="test", repo="", local_path=proj_path))
+
+    brain = Brain(identity={"name": "test"}, env_path=env_path)
+    brain.stream = MemoryStream(env_path)
+    brain._init_stores()
+
+    assert hasattr(brain, 'watcher')
+    assert "proj" in brain.watcher.get_watched_projects()
+
+    # Manually scan — should produce at least one change
+    changes = brain.watcher.scan_all()
+    assert len(changes) >= 1
+
+    # Create analysis tasks for significant changes
+    tasks_created = 0
+    for change in changes:
+        if brain.watcher.should_analyze(change):
+            task = brain.watcher.create_analysis_task(change)
+            if task:
+                tasks_created += 1
+
+    # security + feat keywords + 6 files should exceed the 0.5 threshold
+    assert tasks_created >= 1

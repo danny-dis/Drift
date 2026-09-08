@@ -16,6 +16,7 @@ from drift.brain import Brain
 from drift.config import config
 from drift.identity import _derive_traits
 from drift.organism_api import router as organism_router
+from drift.ui_api import router as ui_router
 
 logger = logging.getLogger("drift.server")
 
@@ -30,6 +31,25 @@ def create_app(all_brains: dict[str, Brain]) -> FastAPI:
     app.state.drift_brains = brains
     if organism_router not in app.router.routes:
         app.include_router(organism_router)
+    if ui_router not in app.router.routes:
+        app.include_router(ui_router)
+
+    # Register frontend catch-all LAST so it doesn't shadow API routes
+    frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+    if os.path.isdir(frontend_dist):
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(frontend_dist, "assets")),
+            name="assets",
+        )
+
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str):
+            file_path = os.path.join(frontend_dist, full_path)
+            if os.path.isfile(file_path):
+                return FileResponse(file_path)
+            return FileResponse(os.path.join(frontend_dist, "index.html"))
+
     return app
 
 
@@ -220,22 +240,6 @@ async def get_file(request: Request, path: str):
             return {"path": path, "content": f.read()}
     except Exception as e:
         return {"path": path, "content": f"Error: {e}"}
-
-
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(frontend_dist):
-    app.mount(
-        "/assets",
-        StaticFiles(directory=os.path.join(frontend_dist, "assets")),
-        name="assets",
-    )
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
 @app.on_event("startup")

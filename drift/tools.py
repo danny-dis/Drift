@@ -69,7 +69,10 @@ def _venv_dir(env_root: str) -> str:
 
 def _venv_python(env_root: str) -> str:
     """Path to the venv's Python interpreter."""
-    return os.path.join(_venv_dir(env_root), "bin", "python")
+    venv = _venv_dir(env_root)
+    if os.name == "nt":
+        return os.path.join(venv, "Scripts", "python.exe")
+    return os.path.join(venv, "bin", "python")
 
 
 def _venv_bin(env_root: str) -> str:

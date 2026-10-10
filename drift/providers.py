@@ -52,9 +52,6 @@ TOOLS = [
         },
     },
     {
-        "type": "web_search_preview",
-    },
-    {
         "type": "function",
         "name": "respond",
         "description": (
@@ -219,8 +216,8 @@ def _translate_input_to_messages(
             call_id = item.get("call_id")
             if call_id:
                 tool_msg["tool_call_id"] = call_id
-            if config["provider"] == "custom":
-                # Also send tool_name for Ollama cloud models that may expect it
+            # Only Ollama cloud models expect tool_name; Groq rejects it
+            if config["provider"] == "custom" and "ollama" in config.get("base_url", ""):
                 tool_msg["tool_name"] = item.get("name", "")
             messages.append(tool_msg)
         elif "role" in item:
@@ -474,6 +471,7 @@ def embed(text: str) -> list[float]:
 
     Uses the configured provider's embeddings endpoint. Falls back to OpenAI
     if the provider doesn't support embeddings (requires OPENAI_API_KEY).
+    Returns empty list if no embedding provider is available.
     """
     from drift.config import config as cfg
 
@@ -484,9 +482,22 @@ def embed(text: str) -> list[float]:
         client = _completions_client() if not _uses_responses_api() else _client()
         response = client.embeddings.create(model=model, input=text)
         return response.data[0].embedding
-    except Exception:
+    except Exception as e:
+        # Groq and some providers don't support embeddings — fall back to OpenAI
+        if "does not exist" in str(e) or "not found" in str(e).lower():
+            fallback_key = os.environ.get("OPENAI_API_KEY")
+            if fallback_key:
+                try:
+                    fallback = openai.OpenAI(api_key=fallback_key)
+                    response = fallback.embeddings.create(model=model, input=text)
+                    return response.data[0].embedding
+                except Exception:
+                    pass
+            # No embedding provider available — return empty list
+            logger.warning("No embedding provider available; memory retrieval will use recency only")
+            return []
         if _uses_responses_api():
-            raise  # OpenAI is already the provider, don't retry
+            raise
         # Fall back to OpenAI for embeddings
         fallback_key = os.environ.get("OPENAI_API_KEY")
         if not fallback_key:

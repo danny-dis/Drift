@@ -73,4 +73,6 @@ if __name__ == "__main__":
     names = [b.identity["name"] for b in brains.values()]
     print(f"\n  Starting {len(brains)} Drift organism(s): {', '.join(names)}")
     print("  Open http://localhost:8000\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    port = int(os.environ.get("DRIFT_PORT", 47116))
+    print(f"  Open http://localhost:{port}\n")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

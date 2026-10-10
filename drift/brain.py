@@ -683,6 +683,20 @@ class Brain:
         except Exception:
             return
 
+        # Guard: if the model returned empty output (no text, no tool calls),
+        # don't emit a receipt or enter the tool loop — just log and skip.
+        # This prevents the infinite empty-response loop that burns tokens.
+        if not response.get("text") and not response.get("tool_calls"):
+            logger.warning(
+                "Model returned empty response for task %s — skipping cycle",
+                task.id,
+            )
+            await self._emit(
+                "error",
+                text="Model returned empty response, will retry next cycle",
+            )
+            return
+
         await self._emit_api_call(instructions, input_list, response)
         self._save_receipt(task, meta, response)
 

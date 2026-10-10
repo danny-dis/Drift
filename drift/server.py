@@ -1,4 +1,4 @@
-"""FastAPI web server — API + WebSocket + serves frontend."""
+"""FastAPI web server — Drift organism API + WebSocket + frontend."""
 
 import asyncio
 import hashlib
@@ -9,48 +9,134 @@ import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from drift.brain import Brain
 from drift.config import config
 from drift.identity import _derive_traits
+from drift.organism_api import router as organism_router
+from drift.ui_api import router as ui_router
 
 logger = logging.getLogger("drift.server")
 
 app = FastAPI(title="Drift")
-brains: dict[str, Brain] = {}  # crab_id -> Brain
+brains: dict[str, Brain] = {}
+_tasks: set = set()  # tracked handles for graceful shutdown
+
+
+def _origin_allowed(connection) -> bool:
+    origin = connection.headers.get("origin")
+    if not origin:
+        return True  # native clients; browser requests supply Origin
+    scheme = "https" if connection.url.scheme in ("https", "wss") else "http"
+    same_origin = f"{scheme}://{connection.headers.get('host', '')}"
+    allowed = os.environ.get("DRIFT_ALLOWED_ORIGINS", "").split(",")
+    return origin == same_origin or origin in [o.strip() for o in allowed if o.strip()]
+
+
+@app.middleware("http")
+async def _bearer_guard(request: Request, call_next):
+    from fastapi.responses import JSONResponse
+    import hmac
+    if not _origin_allowed(request):
+        return JSONResponse({"detail": "foreign origin blocked"}, status_code=403)
+    token = os.environ.get("DRIFT_API_TOKEN", "")
+    if token and request.url.path.startswith("/api/"):
+        got = request.headers.get("authorization", "")
+        if not hmac.compare_digest(got, f"Bearer {token}"):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+async def _authorize_websocket(ws: WebSocket) -> bool:
+    import hmac
+    token = os.environ.get("DRIFT_API_TOKEN", "")
+    if not _origin_allowed(ws):
+        await ws.close(code=4403)
+        return False
+    if token and not hmac.compare_digest(ws.headers.get("authorization", ""), f"Bearer {token}"):
+        await ws.close(code=4401)
+        return False
+    return True
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    for t in list(_tasks):
+        t.cancel()
+    if _tasks:
+        await asyncio.gather(*_tasks, return_exceptions=True)
+    _tasks.clear()
 
 
 def create_app(all_brains: dict[str, Brain]) -> FastAPI:
-    """Initialize the app with brains dict. Called from main.py."""
+    """Initialize the app with the running Drift organisms."""
     global brains
     brains = all_brains
+    app.state.drift_brains = brains
+    for brain in brains.values():
+        if not hasattr(brain, "ledger"):
+            brain._init_stores()
+    if getattr(app.state, "routes_installed", False):
+        return app
+    app.include_router(organism_router)
+    app.include_router(ui_router)
+    app.state.routes_installed = True
+
+    # Register frontend catch-all LAST so it doesn't shadow API routes
+    frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+    if os.path.isdir(frontend_dist):
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(frontend_dist, "assets")),
+            name="assets",
+        )
+
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str):
+            from pathlib import Path
+            if full_path.startswith("api/"):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="endpoint not found")
+            base = Path(frontend_dist).resolve()
+            target = (base / full_path).resolve()
+            try:
+                target.relative_to(base)  # traversal guard (not prefix)
+            except ValueError:
+                return FileResponse(os.path.join(frontend_dist, "index.html"))
+            if target.is_file():
+                return FileResponse(str(target))
+            return FileResponse(os.path.join(frontend_dist, "index.html"))
+
     return app
 
 
 def _get_brain(request: Request) -> Brain:
-    """Look up brain by ?crab=ID query param, or default to first."""
+    """Look up brain by ?crab=ID for backwards compatibility."""
+    from fastapi import HTTPException
     crab_id = request.query_params.get("crab")
-    if crab_id and crab_id in brains:
+    if not brains:
+        raise HTTPException(status_code=503, detail="no organisms running")
+    if crab_id:
+        if crab_id not in brains:
+            raise HTTPException(status_code=404, detail="organism not found")
         return brains[crab_id]
     return next(iter(brains.values()))
 
 
-# CORS for development (Vite dev server)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# --- WebSocket ---
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+if os.environ.get("DRIFT_ALLOWED_ORIGINS"):
+    app.add_middleware(CORSMiddleware,
+        allow_origins=os.environ["DRIFT_ALLOWED_ORIGINS"].split(","),
+        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 
 @app.websocket("/ws/{crab_id}")
 async def websocket_endpoint(ws: WebSocket, crab_id: str):
+    if not await _authorize_websocket(ws):
+        return
     brain = brains.get(crab_id)
     if not brain:
         await ws.close(code=4004)
@@ -60,7 +146,7 @@ async def websocket_endpoint(ws: WebSocket, crab_id: str):
     logger.info(f"WebSocket client connected to {crab_id}")
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            await ws.receive_text()
     except WebSocketDisconnect:
         brain.remove_ws_client(ws)
         logger.info(f"WebSocket client disconnected from {crab_id}")
@@ -68,32 +154,28 @@ async def websocket_endpoint(ws: WebSocket, crab_id: str):
 
 @app.websocket("/ws")
 async def websocket_default(ws: WebSocket):
-    """Backwards-compatible /ws — connects to the first brain."""
+    if not await _authorize_websocket(ws):
+        return
     if not brains:
         await ws.close(code=4004)
         return
     brain = next(iter(brains.values()))
     await ws.accept()
     brain.add_ws_client(ws)
-    logger.info("WebSocket client connected (default)")
     try:
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
         brain.remove_ws_client(ws)
-        logger.info("WebSocket client disconnected (default)")
-
-
-# --- REST API ---
 
 
 @app.get("/api/crabs")
 async def get_crabs():
-    """List all running crabs."""
     return [
         {
             "id": crab_id,
             "name": brain.identity["name"],
+            "animal": brain.identity.get("animal", "crab"),
             "state": brain.state,
             "thought_count": brain.thought_count,
         }
@@ -103,65 +185,58 @@ async def get_crabs():
 
 @app.post("/api/crabs")
 async def create_crab(request: Request):
-    """Create a new crab at runtime."""
     body = await request.json()
     name = body.get("name", "").strip()
+    animal = body.get("animal", "crab").strip().lower()
     if not name:
         return {"ok": False, "error": "name is required"}
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
+        return {"ok": False, "error": "invalid name (letters/numbers/_/- only)"}
 
     crab_id = name.lower()
     if crab_id in brains:
         return {"ok": False, "error": f"crab '{crab_id}' already exists"}
 
-    # Create box directory
     project_root = os.path.dirname(os.path.dirname(__file__))
     box_path = os.path.join(project_root, f"{crab_id}_box")
     os.makedirs(box_path, exist_ok=True)
-
-    # Generate identity with random entropy (no interactive keyboard mashing)
     seed_bytes = hashlib.sha256(
         f"{name}{time.time_ns()}{os.urandom(32).hex()}".encode()
     ).digest()
-    genome_hex = seed_bytes.hex()
-    traits = _derive_traits(seed_bytes)
-
     identity = {
         "name": name,
-        "genome": genome_hex,
-        "traits": traits,
+        "animal": animal,
+        "genome": seed_bytes.hex(),
+        "traits": _derive_traits(seed_bytes),
         "born": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-
     with open(os.path.join(box_path, "identity.json"), "w") as f:
         json.dump(identity, f, indent=2)
 
-    # Start the brain
     brain = Brain(identity, box_path)
     brains[crab_id] = brain
-    asyncio.create_task(brain.run())
-    logger.info(f"Created and started new crab: {name} ({crab_id})")
-
-    return {"ok": True, "id": crab_id, "name": name}
+    app.state.drift_brains = brains
+    t = asyncio.create_task(brain.run())
+    _tasks.add(t)
+    t.add_done_callback(_tasks.discard)
+    return {"ok": True, "id": crab_id, "name": name, "animal": animal}
 
 
 @app.get("/api/identity")
 async def get_identity(request: Request):
-    """Get the crab's identity."""
-    brain = _get_brain(request)
-    return brain.identity
+    return _get_brain(request).identity
 
 
 @app.get("/api/events")
 async def get_events(request: Request, limit: int = 100):
-    brain = _get_brain(request)
-    return brain.events[-limit:]
+    count = max(0, min(limit, 1000))
+    return _get_brain(request).ledger.data.get("events", [])[-count:] if count else []
 
 
 @app.get("/api/raw")
 async def get_raw(request: Request, limit: int = 20):
-    """Get raw API call history."""
-    brain = _get_brain(request)
-    return brain.api_calls[-limit:]
+    return _get_brain(request).api_calls[-limit:]
 
 
 @app.get("/api/status")
@@ -175,6 +250,7 @@ async def get_status(request: Request):
         "memory_count": len(brain.stream.memories) if brain.stream else 0,
         "model": config["model"],
         "name": brain.identity["name"],
+        "animal": brain.identity.get("animal", "crab"),
         "position": brain.position,
         "focus_mode": brain._focus_mode,
     }
@@ -182,7 +258,6 @@ async def get_status(request: Request):
 
 @app.post("/api/focus-mode")
 async def post_focus_mode(request: Request):
-    """Toggle focus mode on or off."""
     brain = _get_brain(request)
     body = await request.json()
     enabled = bool(body.get("enabled", False))
@@ -192,7 +267,6 @@ async def post_focus_mode(request: Request):
 
 @app.post("/api/message")
 async def post_message(request: Request):
-    """Receive a message from the user (voice from outside the room)."""
     brain = _get_brain(request)
     body = await request.json()
     text = body.get("text", "").strip()
@@ -207,7 +281,6 @@ async def post_message(request: Request):
 
 @app.post("/api/snapshot")
 async def post_snapshot(request: Request):
-    """Receive a canvas snapshot from the frontend."""
     brain = _get_brain(request)
     body = await request.json()
     brain.latest_snapshot = body.get("image")
@@ -232,9 +305,12 @@ async def get_files(request: Request):
 @app.get("/api/files/{path:path}")
 async def get_file(request: Request, path: str):
     brain = _get_brain(request)
-    env_root = os.path.realpath(brain.env_path)
-    full = os.path.realpath(os.path.join(env_root, path))
-    if not full.startswith(env_root):
+    from pathlib import Path
+    env_root = Path(os.path.realpath(brain.env_path))
+    full = (env_root / path).resolve()
+    try:
+        full.relative_to(env_root)
+    except ValueError:
         return {"path": path, "content": "Blocked: path outside environment."}
     try:
         with open(full, "r") as f:
@@ -243,31 +319,9 @@ async def get_file(request: Request, path: str):
         return {"path": path, "content": f"Error: {e}"}
 
 
-# --- Static frontend ---
-
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(frontend_dist):
-    app.mount(
-        "/assets",
-        StaticFiles(directory=os.path.join(frontend_dist, "assets")),
-        name="assets",
-    )
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
-
-
-# --- Startup ---
-
-
 @app.on_event("startup")
 async def startup():
     async def _start_brains():
-        # Small delay so the server finishes binding the port first
         await asyncio.sleep(0.5)
         for crab_id, brain in brains.items():
             asyncio.create_task(brain.run())

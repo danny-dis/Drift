@@ -14,6 +14,125 @@ logger = logging.getLogger("drift.providers")
 # Longer results are truncated to avoid hitting cloud API limits.
 MAX_TOOL_CONTENT = 16000
 
+# HARD free-only request contract (DMR-X auto-free). Both body and headers
+# are sent; alias alone is never proof. No paid fallback anywhere.
+FREE_ONLY_BODY = {"costFilter": "free"}
+FREE_ONLY_HEADERS = {
+    "X-Cost-Filter": "free",
+    "X-Free-Tier-Strategy": "free_only",
+}
+DECISIONS_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+
+
+def free_only_extra() -> tuple[dict, dict]:
+    """Return (extra_body, extra_headers) enforcing HARD free-only."""
+    return dict(FREE_ONLY_BODY), dict(FREE_ONLY_HEADERS)
+
+
+_BUDGET_LOCKS = {}
+
+
+class CallBudget:
+    """Atomic per-organism admission; free/failed attempts count too."""
+    FILENAME = "call_budget.json"
+
+    def __init__(self, root: str):
+        import threading
+        self.root = os.path.realpath(root)
+        self.path = os.path.join(self.root, self.FILENAME)
+        self._lock = _BUDGET_LOCKS.setdefault(self.root, threading.RLock())
+        self.state = {}
+        with self._lock:
+            self._load()
+
+    def _today(self):
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def _week(self):
+        from datetime import datetime, timezone
+        y, week, _ = datetime.now(timezone.utc).isocalendar()
+        return f"{y}-W{week:02d}"
+
+    def _load(self):
+        self.state = {"day": self._today(), "week": self._week(),
+            "daily_calls": 0, "weekly_calls": 0, "daily_tokens": 0,
+            "weekly_tokens": 0, "failures": 0, "unreported_usage_calls": 0}
+        if os.path.isfile(self.path):
+            with open(self.path, encoding="utf-8") as f:
+                stored = json.load(f)  # corruption must not reopen admission
+            if not isinstance(stored, dict):
+                raise RuntimeError("invalid call budget; refusing inference")
+            self.state.update(stored)
+        for key in ("daily_calls", "weekly_calls", "daily_tokens", "weekly_tokens", "failures", "unreported_usage_calls"):
+            value = self.state[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RuntimeError("invalid call budget; refusing inference")
+        if self.state["day"] != self._today():
+            self.state.update(day=self._today(), daily_calls=0, daily_tokens=0)
+        if self.state["week"] != self._week():
+            self.state.update(week=self._week(), weekly_calls=0, weekly_tokens=0)
+
+    def _save(self):
+        import tempfile
+        os.makedirs(self.root, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".budget-", dir=self.root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.state, f)
+            os.replace(tmp, self.path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def _admitted(self):
+        return (self.state["daily_calls"] < int(config.get("daily_max_model_calls", 40))
+            and self.state["weekly_calls"] < int(config.get("weekly_max_model_calls", 200)))
+
+    def can_call(self):
+        with self._lock:
+            self._load()
+            return self._admitted()
+
+    def reserve(self):
+        with self._lock:
+            self._load()
+            if not self._admitted():
+                raise RuntimeError("model-call cap reached (free/failed calls included)")
+            self.state["daily_calls"] += 1
+            self.state["weekly_calls"] += 1
+            self._save()  # reserve before network; crashes cannot erase admission
+
+    def record_call(self, ok, in_tokens=0, out_tokens=0, *, reserved=False, reported=True):
+        with self._lock:
+            self._load()
+            if not reserved:
+                self.state["daily_calls"] += 1
+                self.state["weekly_calls"] += 1
+            if ok:
+                tokens = max(0, int(in_tokens)) + max(0, int(out_tokens))
+                self.state["daily_tokens"] += tokens
+                self.state["weekly_tokens"] += tokens
+                self.state["unreported_usage_calls"] += int(not reported)
+            else:
+                self.state["failures"] += 1
+            self._save()
+
+    def status(self):
+        with self._lock:
+            self._load()
+            return dict(self.state)
+
+
+def _bounded_tokens(requested: int | None) -> int:
+    """Bound token caps so a bad config cannot explode cost."""
+    try:
+        want = int(requested or 0)
+    except (TypeError, ValueError):
+        want = 0
+    cap = int(config.get("max_output_tokens", 1000) or 1000)
+    return max(1, min(want or cap, cap, 4000))
+
 
 def _log_error_response(response: httpx.Response) -> None:
     """Event hook: log 4xx/5xx response body immediately (before retries consume it)."""
@@ -50,9 +169,6 @@ TOOLS = [
             },
             "required": ["command"],
         },
-    },
-    {
-        "type": "web_search_preview",
     },
     {
         "type": "function",
@@ -219,8 +335,8 @@ def _translate_input_to_messages(
             call_id = item.get("call_id")
             if call_id:
                 tool_msg["tool_call_id"] = call_id
-            if config["provider"] == "custom":
-                # Also send tool_name for Ollama cloud models that may expect it
+            # Only Ollama cloud models expect tool_name; Groq rejects it
+            if config["provider"] == "custom" and "ollama" in config.get("base_url", ""):
                 tool_msg["tool_name"] = item.get("name", "")
             messages.append(tool_msg)
         elif "role" in item:
@@ -295,7 +411,7 @@ def _normalize_completions_response(response) -> dict:
 
 
 def _client() -> openai.OpenAI:
-    return openai.OpenAI(api_key=config["api_key"])
+    return openai.OpenAI(api_key=config["api_key"], max_retries=0, timeout=float(config.get("model_timeout_seconds", 30)))
 
 
 def _uses_responses_api() -> bool:
@@ -310,11 +426,11 @@ def _completions_client() -> openai.OpenAI:
         # Ollama and similar local providers don't need a real key;
         # the SDK requires something, so use a placeholder
         api_key = "ollama"
-    kwargs = {"api_key": api_key}
+    kwargs = {"api_key": api_key, "max_retries": 0, "timeout": float(config.get("model_timeout_seconds", 30))}
     if config.get("base_url"):
         kwargs["base_url"] = config["base_url"]
         # Local/cloud models (Ollama, etc.) can return transient 500s — retry more
-        kwargs["max_retries"] = 5
+        kwargs["max_retries"] = 0
         # Log 500 response bodies immediately (before retries)
         http_client = httpx.Client(
             event_hooks={"response": [_log_error_response]},
@@ -346,8 +462,13 @@ def _chat_responses(
         kwargs["instructions"] = instructions
     if tools:
         kwargs["tools"] = TOOLS
+    if config.get("free_only", True):
+        body, headers = free_only_extra()
+        kwargs["extra_body"] = body
+        kwargs["extra_headers"] = headers
 
-    response = _client().responses.create(**kwargs)
+    with _client() as client:
+        response = client.responses.create(**kwargs)
 
     # Parse output items
     text_parts = []
@@ -370,6 +491,8 @@ def _chat_responses(
         "text": "\n".join(text_parts) if text_parts else None,
         "tool_calls": tool_calls,
         "output": response.output,
+        "usage": response.usage.model_dump() if response.usage else {},
+        "model": response.model,
     }
 
 
@@ -418,6 +541,10 @@ def _chat_completions(
             completions_tools = completions_tools + ollama_tools
         if completions_tools:
             kwargs["tools"] = completions_tools
+    if config.get("free_only", True):
+        body, headers = free_only_extra()
+        kwargs["extra_body"] = body
+        kwargs["extra_headers"] = headers
 
     summary = _summarize_messages_for_log(messages)
     logger.info(
@@ -428,8 +555,12 @@ def _chat_completions(
         json.dumps(summary, default=str),
     )
     try:
-        response = _completions_client().chat.completions.create(**kwargs)
-        return _normalize_completions_response(response)
+        with _completions_client() as client:
+            response = client.chat.completions.create(**kwargs)
+        result = _normalize_completions_response(response)
+        result["usage"] = response.usage.model_dump() if response.usage else {}
+        result["model"] = response.model
+        return result
     except Exception as e:
         body = ""
         for attr in ("response", "http_response", "body"):
@@ -449,51 +580,56 @@ def _chat_completions(
         raise
 
 
-def chat(
-    input_list: list,
-    tools: bool = True,
-    instructions: str = None,
-    max_tokens: int = 300,
-) -> dict:
-    """Make an LLM call. Routes to Responses API or Chat Completions based on provider config.
+def chat(input_list: list, tools: bool = True, instructions: str = None,
+         max_tokens: int = 300, *, budget_root: str | None = None) -> dict:
+    """One bounded admitted invocation; no SDK retries or paid fallback."""
+    _require_free_route()
+    budget = CallBudget(budget_root or config.get("environment_path", "."))
+    budget.reserve()
+    try:
+        invoke = _chat_responses if _uses_responses_api() else _chat_completions
+        result = invoke(input_list, tools, instructions, _bounded_tokens(max_tokens))
+    except Exception:
+        budget.record_call(False, reserved=True)
+        raise
+    usage = result.get("usage") or {}
+    in_tokens = usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
+    out_tokens = usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+    budget.record_call(True, in_tokens, out_tokens, reserved=True, reported=bool(usage))
+    return result
 
-    Returns:
-    {
-        "text": str or None,
-        "tool_calls": [{"name": str, "arguments": dict, "call_id": str}],
-        "output": list,   # raw output (for appending back to input on follow-up calls)
-    }
-    """
-    if _uses_responses_api():
-        return _chat_responses(input_list, tools, instructions, max_tokens)
-    return _chat_completions(input_list, tools, instructions, max_tokens)
+
+def _require_free_route():
+    if not config.get("free_only", True):
+        return
+    from urllib.parse import urlparse
+    base = urlparse(config.get("base_url") or "")
+    if not (config.get("provider") in ("dmrx", "custom")
+            and base.hostname in ("127.0.0.1", "localhost", "::1")
+            and base.port == 47113):
+        raise RuntimeError("free-only requires the local DMR-X gateway; other providers are not admitted")
 
 
 def embed(text: str) -> list[float]:
-    """Get an embedding vector for a text string.
+    """Get an embedding vector. Disabled by default (free-only, no paid fallback).
 
-    Uses the configured provider's embeddings endpoint. Falls back to OpenAI
-    if the provider doesn't support embeddings (requires OPENAI_API_KEY).
+    Returns [] unless config embeddings_enabled is explicitly True.
+    Never automatically calls OpenAI embeddings.
     """
     from drift.config import config as cfg
 
+    if not cfg.get("embeddings_enabled", False) or cfg.get("free_only", True):
+        return []
     model = cfg.get("embedding_model", "text-embedding-3-small")
 
-    # Try configured provider first
+    # Try configured provider only; never paid fallback.
     try:
         client = _completions_client() if not _uses_responses_api() else _client()
         response = client.embeddings.create(model=model, input=text)
         return response.data[0].embedding
-    except Exception:
-        if _uses_responses_api():
-            raise  # OpenAI is already the provider, don't retry
-        # Fall back to OpenAI for embeddings
-        fallback_key = os.environ.get("OPENAI_API_KEY")
-        if not fallback_key:
-            raise
-        fallback = openai.OpenAI(api_key=fallback_key)
-        response = fallback.embeddings.create(model=model, input=text)
-        return response.data[0].embedding
+    except Exception as e:
+        logger.warning("embedding unavailable, lexical fallback: %s", str(e)[:120])
+        return []
 
 
 def chat_short(input_list: list, instructions: str = None) -> str:

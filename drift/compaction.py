@@ -8,7 +8,7 @@ active context. All logic here is deterministic and cheap — no model calls.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -139,58 +139,59 @@ class Compactor:
 
         Returns the list of newly created finding events.
         """
-        events = self.ledger.data.get("events", [])
-        active_indices = [i for i, e in enumerate(events) if not e.get("compacted") and e.get("kind") != "finding"]
-        active_events = [events[i] for i in active_indices]
+        with self.ledger._lock:
+            self.ledger._refresh_locked()
+            events = self.ledger.data.get("events", [])
+            active_indices = [i for i, e in enumerate(events) if not e.get("compacted") and e.get("kind") != "finding"]
+            active_events = [events[i] for i in active_indices]
 
-        if not active_events:
-            logger.debug("compact_events: no active events to compact")
-            return []
+            if not active_events:
+                logger.debug("compact_events: no active events to compact")
+                return []
 
-        groups = find_related_events(active_events)
-        findings: list[DriftEvent] = []
+            groups = find_related_events(active_events)
+            findings: list[DriftEvent] = []
 
-        for group in groups:
-            summary = summarize_event_group(group)
-            # Aggregate supporting metadata from the group.
-            confidence = _mean(_float(e, "confidence") for e in group)
-            related_projects = _unique(
-                p for e in group for p in e.get("related_projects", [])
+            for group in groups:
+                summary = summarize_event_group(group)
+                # Aggregate supporting metadata from the group.
+                confidence = _mean(_float(e, "confidence") for e in group)
+                related_projects = _unique(
+                    p for e in group for p in e.get("related_projects", [])
+                )
+                related_ideas = _unique(
+                    i for e in group for i in e.get("related_ideas", [])
+                )
+                evidence = _unique(
+                    ev for e in group for ev in e.get("evidence", [])
+                )
+                sources = _unique(e.get("source", "") for e in group if e.get("source"))
+                source_label = "compaction:" + "+".join(sorted(sources)) if sources else "compaction"
+
+                finding = DriftEvent(
+                    kind="finding",
+                    source=source_label,
+                    summary=summary,
+                    confidence=round(confidence, 3),
+                    evidence=list(evidence)[:20],
+                    related_projects=list(related_projects),
+                    related_ideas=list(related_ideas),
+                )
+                findings.append(finding)
+
+                # Mark every source event as compacted so they are not re-synthesized.
+                for ev in group:
+                    ev["compacted"] = True
+
+            # Persist marks and findings together; add_event reloads the ledger.
+            self.ledger.data["events"].extend(asdict(f) for f in findings)
+            self.ledger._persist_locked()
+
+            logger.info(
+                "compact_events: created %d finding(s) from %d active event(s) in %d group(s)",
+                len(findings), len(active_events), len(groups),
             )
-            related_ideas = _unique(
-                i for e in group for i in e.get("related_ideas", [])
-            )
-            evidence = _unique(
-                ev for e in group for ev in e.get("evidence", [])
-            )
-            sources = _unique(e.get("source", "") for e in group if e.get("source"))
-            source_label = "compaction:" + "+".join(sorted(sources)) if sources else "compaction"
-
-            finding = DriftEvent(
-                kind="finding",
-                source=source_label,
-                summary=summary,
-                confidence=round(confidence, 3),
-                evidence=list(evidence)[:20],
-                related_projects=list(related_projects),
-                related_ideas=list(related_ideas),
-            )
-            findings.append(finding)
-
-            # Mark every source event as compacted so they are not re-synthesized.
-            for ev in group:
-                ev["compacted"] = True
-
-        # Persist: append findings, save the ledger (which also writes events back).
-        for f in findings:
-            self.ledger.add_event(f)
-        self.ledger.save()
-
-        logger.info(
-            "compact_events: created %d finding(s) from %d active event(s) in %d group(s)",
-            len(findings), len(active_events), len(groups),
-        )
-        return findings
+            return findings
 
     def decay_stale_memories(self, half_life_hours: float = 72.0) -> int:
         """Update recency scores in the memory stream.

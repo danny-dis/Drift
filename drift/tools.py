@@ -62,6 +62,34 @@ BLOCKED_PREFIXES = [
 _SANDBOX = os.path.join(os.path.dirname(__file__), "pysandbox.py")
 
 
+def safe_join(env_root: str, rel: str) -> str:
+    """Scope a relative path inside env_root. Raises on traversal.
+
+    Uses Path.relative_to/commonpath semantics, not string prefix.
+    """
+    from pathlib import Path
+    root = Path(os.path.realpath(env_root))
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise ValueError(f"Blocked: path escapes environment: {rel!r}")
+    return str(target)
+
+
+def shell_available() -> tuple[bool, str]:
+    """Shell is disabled by default. Opt-in via config shell_enabled.
+
+    Blocklists are NOT a sandbox — without the pysandbox wrapper present
+    we refuse even when enabled (real isolation required).
+    """
+    if not bool(config.get("shell_enabled", False)):
+        return False, "shell is disabled by default (set shell_enabled=true to opt in)"
+    if bool(config.get("shell_require_isolation", True)) and not os.path.isfile(_SANDBOX):
+        return False, "shell isolation unavailable (pysandbox missing); refusing"
+    return True, ""
+
+
 def _venv_dir(env_root: str) -> str:
     """Path to the crab's virtual environment."""
     return os.path.join(os.path.realpath(env_root), ".venv")
@@ -208,6 +236,9 @@ def _rewrite_pip_cmd(command: str, env_root: str) -> str | None:
 
 def run_command(command: str, env_root: str) -> str:
     """Run a shell command sandboxed to the environment/ folder."""
+    ok, reason = shell_available()
+    if not ok:
+        return f"Blocked: {reason}."
     real_root = os.path.realpath(env_root)
 
     # Safety check (runs on original command before any rewriting)
@@ -331,24 +362,145 @@ def ollama_web_fetch(url: str) -> str:
         return f"Error: {e}"
 
 
-def fetch_url(url: str, max_chars: int = 12000, timeout: int = 15) -> str:
-    """Fetch a URL and return its content (for research). Runs in main process, not sandbox."""
+def _ip_is_public(ip: str) -> bool:
+    """True only for global public IPs. Denies private/loopback/link-local/etc."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_global and not (
+        addr.is_private or addr.is_loopback or addr.is_link_local
+        or addr.is_multicast or addr.is_reserved or addr.is_unspecified
+    )
+
+
+def _host_resolves_public(host: str, resolver=None) -> bool:
+    """Resolve host and require every addr to be public. Injectable for tests."""
+    import socket
+    try:
+        infos = resolver(host) if resolver else socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    ips = set()
+    for info in infos:
+        try:
+            ips.add(info[4][0])
+        except (IndexError, TypeError):
+            continue
+    if not ips:
+        return False
+    return all(_ip_is_public(ip.split("%")[0]) for ip in ips)
+
+
+def _open_public_url(request, timeout):
+    """Connect only to the validated IP; no proxy or implicit redirects."""
+    import socket
+    import ssl
+    from http.client import HTTPConnection, HTTPSConnection
+    parsed = urlparse(request.full_url)
+    host = parsed.hostname
+    if not host or parsed.username or parsed.password:
+        raise ValueError("URL credentials are not permitted")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    ips = {info[4][0] for info in infos}
+    if not ips or not all(_ip_is_public(ip) for ip in ips):
+        raise ValueError("URL resolved to non-public address")
+    # Socket uses the IP literal, but TLS and Host retain original hostname.
+    context = ssl.create_default_context() if parsed.scheme == "https" else None
+    connection = (HTTPSConnection(host, port, timeout=timeout, context=context)
+                  if context else HTTPConnection(host, port, timeout=timeout))
+    def connect():
+        sock = socket.create_connection((sorted(ips)[0], port), timeout=timeout)
+        try:
+            connection.sock = context.wrap_socket(sock, server_hostname=host) if context else sock
+        except Exception:
+            sock.close()
+            raise
+    connection.connect = connect
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    try:
+        connection.request("GET", path, headers={"Host": parsed.netloc,
+            "User-Agent": "Drift/1.0 (research)", "Connection": "close"})
+        response = connection.getresponse()
+        response._drift_connection = connection
+        return response
+    except Exception:
+        connection.close()
+        raise
+
+
+def fetch_url(url: str, max_chars: int = 12000, timeout: int = 15,
+              opener=None, resolver=None) -> str:
+    """Fetch a URL safely. Denies SSRF targets, validates redirects,
+    caps bytes BEFORE full read, explicit timeout. Network injectable
+    via opener/resolver so tests never need real external calls."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return "Error: Only http and https URLs are allowed."
+    if parsed.username or parsed.password:
+        return "Error: URL credentials are not permitted."
+    host = parsed.hostname or ""
+    if not host or not _host_resolves_public(host, resolver):
+        return "Error: URL host is not public (SSRF guard)."
+    max_bytes = min(max(4096, max_chars * 4), 1_000_000)
+    current = url
     try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Drift/1.0 (research)"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-        if len(body) > max_chars:
-            body = body[:max_chars] + "\n...(truncated)"
+        for _ in range(4):  # initial + up to 3 redirects, each validated
+            req = urllib.request.Request(
+                current, headers={"User-Agent": "Drift/1.0 (research)"},
+            )
+            open_fn = opener or (lambda r: _open_public_url(r, timeout))
+            resp = open_fn(req)
+            try:
+                status = getattr(resp, "status", 200) or 200
+                if status in (301, 302, 303, 307, 308):
+                    nxt = resp.headers.get("Location", "") if hasattr(resp, "headers") else ""
+                    if not nxt:
+                        return "Error: redirect without Location."
+                    from urllib.parse import urljoin
+                    current = urljoin(current, nxt)
+                    p2 = urlparse(current)
+                    if p2.scheme not in ("http", "https"):
+                        return "Error: redirect to non-http(s) denied."
+                    if not _host_resolves_public(p2.hostname or "", resolver):
+                        return "Error: redirect host is not public (SSRF guard)."
+                    continue
+                if not 200 <= status < 300:
+                    return f"Error: HTTP {status}."
+                chunks, total = [], 0
+                while True:
+                    chunk = resp.read(min(65536, max_bytes - total))
+                    if not chunk:
+                        break
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8", "replace")
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= max_bytes:
+                        break
+                body = b"".join(chunks).decode("utf-8", errors="replace")
+                break
+            finally:
+                try:
+                    resp.close()
+                    connection = getattr(resp, "_drift_connection", None)
+                    if connection:
+                        connection.close()
+                except Exception:
+                    pass
+        else:
+            return "Error: too many redirects."
+
         # Simple HTML-to-text: strip tags, collapse whitespace
         text = re.sub(r"<script[^>]*>.*?</script>", "", body, flags=re.DOTALL | re.I)
         text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.I)
         text = re.sub(r"<[^>]+>", " ", text)
+        import html
+        text = html.unescape(text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:max_chars] if len(text) > max_chars else text or body[:max_chars]
     except URLError as e:

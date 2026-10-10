@@ -31,6 +31,29 @@ def load_config() -> dict:
     config.setdefault("recency_decay_rate", 0.995)
     config.setdefault("max_tool_rounds", 12)
 
+    # PR1/PR2/PR5 minimal runtime: free-only + safety + budgets (YAGNI, stdlib only).
+    # Default deployed path is DMR-X auto-free; never auto-fallback to paid.
+    config.setdefault("free_only", True)
+    config.setdefault("cost_filter", "free")
+    config.setdefault("free_tier_strategy", "free_only")
+    config.setdefault("embeddings_enabled", False)
+    config.setdefault("llm_scoring_enabled", False)
+    config.setdefault("shell_enabled", False)
+    config.setdefault("shell_require_isolation", True)
+    config.setdefault("daily_max_model_calls", 200)
+    config.setdefault("max_output_tokens", 1000)
+    config.setdefault("max_cycle_seconds", 120)
+    config.setdefault("max_tool_calls", 12)
+    config.setdefault("max_context_chars", 7000)
+    config.setdefault("idle_backoff_seconds", 45)
+    config.setdefault("idle_hysteresis_cycles", 3)
+    config.setdefault("jev_enabled", False)
+    config.setdefault("decisions_llm_fallback", False)
+    config.setdefault("host", os.environ.get("DRIFT_HOST", "127.0.0.1"))
+    config.setdefault("port", int(os.environ.get("DRIFT_PORT", "47116")))
+    config.setdefault("box", os.environ.get("DRIFT_BOX", ""))
+    config.setdefault("organism_name", os.environ.get("DRIFT_NAME", ""))
+
     # Attention economy / compute-budget defaults
     config.setdefault("attention_daily_budget", 1.0)
     config.setdefault("attention_weekly_budget", 5.0)

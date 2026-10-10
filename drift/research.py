@@ -8,10 +8,18 @@ except where explicitly noted.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import logging
+import os
 import re
+import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from drift.config import config
 
@@ -427,3 +435,515 @@ def synthesize_findings(
         alternatives=alternatives,
         confidence=round(confidence, 3),
     )
+
+
+# ---------------------------------------------------------------------------
+# ResearchStore — durable deterministic session store (PR3/4, stdlib only)
+# ---------------------------------------------------------------------------
+# Minimal contract:
+#   ResearchStore(root)
+#   start(query, task_id=None, project_id=None, strategy='targeted_lookup')
+#   add_source(session_id, url, text)
+#   finish(session_id, report)
+#   get(session_id) / list()
+# No network fetch here (Brain tools fetch). No lexical-overlap factual
+# proof: verification flags mean "citations reference retained sources".
+
+STRATEGIES = (
+    "broad_scan",
+    "deep_dive",
+    "targeted_lookup",
+    "experiment",
+    "connect",
+    "challenge",
+)
+
+SESSION_STATES = (
+    "selecting",
+    "researching",
+    "verifying",
+    "complete",
+    "needs_review",
+)
+
+PROPOSAL_STATES = (
+    "proposed",
+    "accepted",
+    "rejected",
+    "implemented",
+    "superseded",
+)
+
+PROPOSAL_TRANSITIONS = {
+    "proposed": {"accepted", "rejected"},
+    "accepted": {"implemented", "rejected", "superseded"},
+    "rejected": {"proposed"},
+    "implemented": {"superseded"},
+    "superseded": set(),
+}
+
+MAX_SOURCES = 10
+MAX_SOURCE_CHARS = 4000
+MAX_REPORT_CHARS = 8000
+MAX_REPAIRS = 2
+
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_HYP_RE = re.compile(
+    r"\b(might|could|may|maybe|possibly|perhaps|likely|hypothes\w*)\b",
+    re.IGNORECASE,
+)
+_NEG_CUES = frozenset({
+    "not", "no", "never", "none", "neither", "nor", "n't",
+    "fail", "fails", "failed", "false", "contradict", "disagree",
+    "refute", "deny", "denies", "lack", "lacks", "without",
+})
+_STOPWORDS = frozenset({
+    "what", "which", "that", "this", "with", "from", "compare",
+    "versus", "evaluate", "does", "s", "and", "the", "for",
+})
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{3,}", text.lower()))
+
+
+def _canonical_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("empty url")
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"bad url {url!r}")
+    host = parts.hostname.lower()
+    path = parts.path.rstrip("/") or ""
+    netloc = host
+    if parts.port and parts.port not in (80, 443):
+        netloc = f"{host}:{parts.port}"
+    return urlunparse((parts.scheme.lower(), netloc, path, "", parts.query, ""))
+
+
+def _tag_claim(text: str) -> str:
+    """Tag a claim observation/hypothesis/opinion. Never a proof verdict."""
+    if _HYP_RE.search(text):
+        return "hypothesis"
+    for pattern in _OPINION_INDICATORS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return "opinion"
+    return "observation"
+
+
+def _is_significant(query: str) -> bool:
+    words = re.findall(r"[A-Za-z0-9']+", query)
+    q = query.lower()
+    long_multi = len(words) >= 12 and ("?" in query or " and " in q)
+    compare = (" vs " in q or "compare" in q or "evaluate" in q) and len(words) >= 8
+    return bool(long_multi or compare)
+
+
+def _keywords(query: str, limit: int = 4) -> list[str]:
+    seen: list[str] = []
+    for w in re.findall(r"[a-z0-9]{4,}", query.lower()):
+        if w not in _STOPWORDS and w not in seen:
+            seen.append(w)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _build_candidates(query: str) -> tuple[list[dict[str, Any]], list[str]]:
+    if not _is_significant(query):
+        return [], []
+    kws = _keywords(query) or ["topic"]
+    cands = [
+        {"text": f"Candidate hypothesis: {' / '.join(kws[:2])} explains the observed pattern.", "support": 0.0},
+        {"text": f"Candidate hypothesis: an alternative factor beyond {kws[0]} drives the outcome.", "support": 0.0},
+    ]
+    outline = [
+        f"What evidence exists about: {query[:120]}?",
+        "How do the retained sources compare on the key points?",
+        "What remains uncertain or uncorroborated?",
+    ]
+    return cands, outline
+
+
+_RESEARCH_LOCKS = {}
+
+
+class ResearchStore:
+    """Disk-backed research sessions. Atomic writes, lock-guarded updates."""
+
+    def __init__(self, root: str) -> None:
+        self.root = os.path.abspath(root)
+        self._sessions = os.path.join(self.root, "sessions")
+        self._reports = os.path.join(self.root, "research")
+        self._lock = _RESEARCH_LOCKS.setdefault(self.root, __import__("threading").RLock())
+        os.makedirs(self._sessions, exist_ok=True)
+        os.makedirs(self._reports, exist_ok=True)
+
+    # -- internals ------------------------------------------------------
+    def _check_id(self, session_id: str) -> str:
+        if not isinstance(session_id, str) or not _ID_RE.match(session_id):
+            raise ValueError(f"bad session id {session_id!r}")
+        return session_id
+
+    def _path(self, session_id: str) -> str:
+        self._check_id(session_id)
+        return os.path.join(self._sessions, session_id + ".json")
+
+    def _acquire(self) -> None:
+        self._lock.acquire()
+
+    def _release(self) -> None:
+        self._lock.release()
+
+    def _save_locked(self, session: dict[str, Any]) -> None:
+        tmp = os.path.join(self._sessions, session["id"] + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(session, f, indent=2)
+        os.replace(tmp, self._path(session["id"]))
+
+    def _load_locked(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    # -- public contract -------------------------------------------------
+    def start(self, query: str, task_id: str | None = None,
+              project_id: str | None = None,
+              strategy: str = "targeted_lookup", urls: list[str] | None = None) -> dict[str, Any]:
+        if not query or not query.strip():
+            raise ValueError("query required")
+        if strategy not in STRATEGIES:
+            raise ValueError(f"unknown strategy {strategy!r}")
+        requested = list(urls or [])
+        if len(requested) > MAX_SOURCES or any(not isinstance(u, str) or len(u) > 1024 for u in requested):
+            raise ValueError("at most 10 URL strings of 1024 characters")
+        for url in requested:
+            _canonical_url(url)  # validate syntax; fetch tool enforces network boundary
+        now = _utcnow()
+        candidates, outline = _build_candidates(query.strip())
+        session = {
+            "id": uuid.uuid4().hex,
+            "requested_urls": requested,
+            "query": query.strip(),
+            "task_id": task_id,
+            "project_id": project_id,
+            "strategy": strategy,
+            "strategy_reason": "caller-selected" if strategy else "default",
+            "state": "selecting",
+            "rev": 1,
+            "created_at": now,
+            "updated_at": now,
+            "sources": [],
+            "claims": [],
+            "conflicts": [],
+            "candidates": candidates,
+            "outline": outline,
+            "coverage": {},
+            "repairs": 0,
+            "errors": [],
+            "report": None,
+            "verified": False,
+            "checkpoint": {"rev": 1, "updated_at": now},
+        }
+        self._acquire()
+        try:
+            self._save_locked(session)
+        finally:
+            self._release()
+        return copy.deepcopy(session)
+
+    def add_source(self, session_id: str, url: str, text: str) -> dict[str, Any]:
+        if not text or not text.strip():
+            raise ValueError("text required")
+        self._acquire()
+        try:
+            session = self._load_locked(session_id)
+            if session is None:
+                raise KeyError(f"unknown session {session_id!r}")
+            if session["state"] not in ("selecting", "researching", "needs_review"):
+                raise ValueError(f"cannot add source in state {session['state']!r}")
+            canon = _canonical_url(url)
+            digest = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+            for kept in session["sources"]:
+                if kept["content_hash"] == digest:
+                    if url not in kept["aliases"]:
+                        kept["aliases"].append(url)
+                    session["updated_at"] = _utcnow()
+                    self._save_locked(session)
+                    dup = copy.deepcopy(kept)
+                    dup["duplicate"] = True
+                    return dup
+            if len(session["sources"]) >= MAX_SOURCES:
+                raise ValueError(f"source cap {MAX_SOURCES} reached")
+            now = _utcnow()
+            body = text.strip()[:MAX_SOURCE_CHARS]
+            source = {
+                "id": uuid.uuid4().hex[:12],
+                "url": canon,
+                "original_url": url,
+                "aliases": [url],
+                "excerpt": text[:300],
+                                "text": text[:MAX_SOURCE_CHARS],
+                "content_hash": digest,
+                "retrieved_at": now,
+                "text_len": len(text.strip()),
+            }
+            session["sources"].append(source)
+            claims = extract_claims(body) or [body[:300]]
+            for claim in claims[:5]:
+                session["claims"].append({
+                    "text": claim[:500],
+                    "kind": _tag_claim(claim),
+                    "source_id": source["id"],
+                })
+            session["conflicts"] = self._find_conflicts(session["claims"])
+            session["state"] = "researching"
+            session["rev"] += 1
+            session["updated_at"] = now
+            session["checkpoint"] = {"rev": session["rev"], "updated_at": now}
+            self._save_locked(session)
+            out = copy.deepcopy(source)
+            out["duplicate"] = False
+            return out
+        finally:
+            self._release()
+
+    @staticmethod
+    def _find_conflicts(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        conflicts = []
+        for i in range(len(claims)):
+            for j in range(i + 1, len(claims)):
+                a, b = claims[i], claims[j]
+                if a["source_id"] == b["source_id"]:
+                    continue
+                ta, tb = _tokens(a["text"]), _tokens(b["text"])
+                shared = sorted((ta & tb) - _STOPWORDS)
+                if len(shared) < 3:
+                    continue
+                aneg = bool(ta & _NEG_CUES)
+                bneg = bool(tb & _NEG_CUES)
+                if aneg != bneg:
+                    conflicts.append({
+                        "kind": "candidate",
+                        "source_ids": [a["source_id"], b["source_id"]],
+                        "reason": "candidate conflict on: " + ", ".join(shared[:5]),
+                    })
+        return conflicts
+
+    def finish(self, session_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        self._acquire()
+        try:
+            session = self._load_locked(session_id)
+            if session is None:
+                raise KeyError(f"unknown session {session_id!r}")
+            if session["state"] not in ("researching", "selecting", "verifying",
+                                        "complete", "needs_review"):
+                raise ValueError(f"cannot finish in state {session['state']!r}")
+            errors = self._report_errors(session, report)
+            if errors:
+                if session["repairs"] >= MAX_REPAIRS:
+                    raise ValueError(f"repair limit {MAX_REPAIRS} exceeded: {errors}")
+                session["repairs"] += 1
+                session["errors"] = errors
+                session["state"] = "needs_review"
+                session["verified"] = False
+                session["rev"] += 1
+                session["updated_at"] = _utcnow()
+                session["checkpoint"] = {"rev": session["rev"],
+                                         "updated_at": session["updated_at"]}
+                self._save_locked(session)
+                return copy.deepcopy(session)
+            # structural proposal-transition check (raises, not a repair)
+            proposals = self._checked_proposals(session, report.get("proposals", []))
+            stored = {
+                "findings": list(report.get("findings", [])),
+                "citations": [dict(c) for c in report.get("citations", [])],
+                "proposals": proposals,
+            }
+            session["report"] = stored
+            session["errors"] = []
+            session["coverage"] = self._coverage(session)
+            for cand, cov in zip(session["candidates"],
+                                 session["coverage"].get("hypotheses", [])):
+                cand["support"] = cov["support"]
+            session["state"] = "verifying"
+            if not session["sources"] or stored["findings"] and not stored["citations"]:
+                session["state"] = "needs_review"
+                session["verified"] = False
+            else:
+                session["state"] = "complete"
+                session["verified"] = False  # citation integrity is not factual verification
+                session["citation_integrity_checked"] = bool(stored["citations"])
+            session["rev"] += 1
+            session["updated_at"] = _utcnow()
+            session["checkpoint"] = {"rev": session["rev"],
+                                     "updated_at": session["updated_at"]}
+            self._save_locked(session)
+            self._write_markdown(session)
+            return copy.deepcopy(session)
+        finally:
+            self._release()
+
+    @staticmethod
+    def _report_errors(session: dict[str, Any],
+                       report: dict[str, Any]) -> list[str]:
+        if not isinstance(report, dict):
+            return ["report must be an object"]
+        if not isinstance(report.get("findings"), list):
+            return ["report.findings must be a list"]
+        if not report["findings"] or not all(isinstance(f, str) and f.strip() for f in report["findings"]):
+            return ["report.findings must contain nonempty strings"]
+        if not isinstance(report.get("citations", []), list):
+            return ["report.citations must be a list"]
+        if len(json.dumps(report)) > MAX_REPORT_CHARS:
+            return [f"report exceeds {MAX_REPORT_CHARS} chars"]
+        kept = {s["id"] for s in session["sources"]}
+        for cite in report.get("citations", []):
+            if not isinstance(cite, dict) or cite.get("source_id") not in kept:
+                return [f"citation references unknown source: {cite!r}"]
+            quote = cite.get("quote")
+            if quote:
+                source = next(s for s in session["sources"] if s["id"] == cite["source_id"])
+                if not isinstance(quote, str) or quote not in source.get("text", source.get("excerpt", "")):
+                    return ["citation quote not found in retained source"]
+        return []
+
+    @staticmethod
+    def _checked_proposals(session: dict[str, Any],
+                           proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prev = {}
+        if isinstance(session.get("report"), dict):
+            for p in session["report"].get("proposals", []):
+                prev[p["id"]] = p
+        out = []
+        now = _utcnow()
+        for i, p in enumerate(proposals):
+            if not isinstance(p, dict) or not p.get("title"):
+                raise ValueError(f"bad proposal at index {i}")
+            pid = p.get("id") or f"p{i + 1}"
+            state = p.get("state", "proposed")
+            if state not in PROPOSAL_STATES:
+                raise ValueError(f"bad proposal state {state!r}")
+            old = prev.get(pid)
+            history = list(old.get("history", [])) if old else []
+            if old is None:
+                if state != "proposed":
+                    raise ValueError(
+                        f"new proposal {pid!r} must start as proposed")
+            elif state != old["state"]:
+                if state not in PROPOSAL_TRANSITIONS[old["state"]]:
+                    raise ValueError(
+                        f"illegal proposal transition "
+                        f"{old['state']!r} -> {state!r}")
+                history.append({"from": old["state"], "to": state, "at": now})
+            entry = {
+                "id": pid,
+                "title": p["title"],
+                "state": state,
+                "provenance": p.get("provenance")
+                or (old or {}).get("provenance")
+                or f"session:{session['id']}@{session['rev']}",
+                "history": history,
+            }
+            out.append(entry)
+        return out
+
+    @staticmethod
+    def _coverage(session: dict[str, Any]) -> dict[str, Any]:
+        pool: set[str] = set()
+        for c in session["claims"]:
+            pool |= _tokens(c["text"])
+        hyps = []
+        for cand in session["candidates"]:
+            ht = _tokens(cand["text"]) - _STOPWORDS
+            overlap = len(ht & pool)
+            denom = max(len(ht), 1)
+            hyps.append({"text": cand["text"],
+                         "support": round(min(1.0, overlap / denom), 3)})
+        covered = 0
+        for item in session["outline"]:
+            it = _tokens(item) - _STOPWORDS
+            if len(it & pool) >= 2:
+                covered += 1
+        return {"hypotheses": hyps,
+                "outline_covered": f"{covered}/{len(session['outline'])}"}
+
+    def get(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)  # validates id -> path bound
+        if not os.path.exists(path):
+            if not _ID_RE.match(session_id or ""):
+                raise ValueError(f"bad session id {session_id!r}")
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def list(self) -> list[dict[str, Any]]:
+        out = []
+        if not os.path.isdir(self._sessions):
+            return out
+        for name in sorted(os.listdir(self._sessions)):
+            if name.endswith(".json"):
+                with open(os.path.join(self._sessions, name),
+                          encoding="utf-8") as f:
+                    out.append(json.load(f))
+        return out
+
+    def export_markdown(self, session_id: str) -> str:
+        session = self.get(session_id)
+        if session is None:
+            raise KeyError(f"unknown session {session_id!r}")
+        return self._render_markdown(session)
+
+    @staticmethod
+    def _render_markdown(session: dict[str, Any]) -> str:
+        lines = [f"# Research: {session['query']}", "",
+                 f"- strategy: {session['strategy']} "
+                 f"({session.get('strategy_reason', '')})",
+                 f"- state: {session['state']} | verified: {session['verified']}",
+                 f"- checkpoint: rev {session['checkpoint']['rev']} "
+                 f"@ {session['checkpoint']['updated_at']}", ""]
+        if session["candidates"]:
+            lines.append("## Candidate hypotheses (unverified)")
+            for c in session["candidates"]:
+                lines.append(f"- {c['text']} (support {c.get('support', 0.0)})")
+            lines.append("")
+        lines.append("## Sources")
+        for s in session["sources"]:
+            lines.append(f"- [{s['id']}] {s['url']} "
+                         f"(hash {s['content_hash'][:12]}, {s['retrieved_at']})")
+            lines.append(f"  {s['excerpt']}")
+        lines.append("")
+        for c in session.get("conflicts", []):
+            lines.append(f"> candidate conflict {c['source_ids']}: {c['reason']}")
+        if session["conflicts"]:
+            lines.append("")
+        rep = session.get("report") or {}
+        lines.append("## Findings")
+        for f in rep.get("findings", []):
+            lines.append(f"- {f}")
+        lines.append("")
+        lines.append("## Citations")
+        for c in rep.get("citations", []):
+            lines.append(f"- {c.get('source_id')}: {c.get('note', '')}")
+        if rep.get("proposals"):
+            lines.append("")
+            lines.append("## Proposals (adoption states, separate from findings)")
+            for p in rep["proposals"]:
+                lines.append(f"- [{p['state']}] {p['title']} "
+                             f"({p['id']}; provenance {p['provenance']})")
+        return "\n".join(lines) + "\n"
+
+    def _write_markdown(self, session: dict[str, Any]) -> str:
+        path = os.path.join(self._reports, session["id"] + ".md")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(self._render_markdown(session))
+        os.replace(tmp, path)
+        return path

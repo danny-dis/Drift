@@ -11,6 +11,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +62,7 @@ class DriftLedger:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "drift_ledger.json"
+        self._lock = threading.RLock()
         self.data: dict[str, Any] = {
             "schema": 2,
             "ideas": [],
@@ -78,36 +81,101 @@ class DriftLedger:
             except (OSError, ValueError, TypeError):
                 pass
 
+    def reload(self) -> None:
+        """Re-read persisted state so a stale in-memory copy can't clobber others."""
+        with self._lock:
+            self._refresh_locked()
+
+    def _refresh_locked(self) -> None:
+        """Re-read file into memory. Caller must hold the lock."""
+        fresh: dict[str, Any] = {
+            "schema": 2, "ideas": [], "projects": [],
+            "events": [], "mind_map": {"nodes": [], "edges": []},
+        }
+        if self.path.exists():
+            try:
+                fresh.update(json.loads(self.path.read_text()))
+            except (OSError, ValueError, TypeError):
+                pass
+        self.data = fresh
+
+    def _persist_locked(self) -> None:
+        """Atomic tmp+replace write. Caller must hold the lock."""
+        payload = json.dumps(self.data, indent=2, ensure_ascii=False)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".ledger-", suffix=".tmp", dir=str(self.root)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_path, self.path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _next_idea_id(self) -> str:
+        best = -1
+        for item in self.data.get("ideas", []):
+            raw = str(item.get("id", ""))
+            if raw.startswith("idea-"):
+                try:
+                    best = max(best, int(raw.split("-")[1]))
+                except (ValueError, IndexError):
+                    continue
+        return f"idea-{best + 1:06d}"
+
     def save(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False))
-        tmp.replace(self.path)
+        with self._lock:
+            payload = json.dumps(self.data, indent=2, ensure_ascii=False)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".ledger-", suffix=".tmp", dir=str(self.root)
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, self.path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     def add_idea(self, text: str, concepts: list[str] | None = None) -> Idea:
-        index = len(self.data["ideas"])
-        idea = Idea(id=f"idea-{index:06d}", text=text.strip(), concepts=concepts or [])
-        self.data["ideas"].append(asdict(idea))
-        self._node(idea.id, "idea", idea.text)
-        for concept in idea.concepts:
-            cid = "concept:" + _slug(concept)
-            self._node(cid, "concept", concept)
-            self._edge(idea.id, cid, "contains")
-        self.save()
-        return idea
+        # Single critical section: refresh + mutate + persist so concurrent
+        # writers can't interleave a stale read between reload and save.
+        with self._lock:
+            self._refresh_locked()
+            idea = Idea(id=self._next_idea_id(), text=text.strip(), concepts=concepts or [])
+            self.data["ideas"].append(asdict(idea))
+            self._node_locked(idea.id, "idea", idea.text)
+            for concept in idea.concepts:
+                cid = "concept:" + _slug(concept)
+                self._node_locked(cid, "concept", concept)
+                self._edge_locked(idea.id, cid, "contains")
+            self._persist_locked()
+            return idea
 
     def add_project(self, project: Project) -> None:
-        existing = next((p for p in self.data["projects"] if p["id"] == project.id), None)
-        if existing:
-            existing.update(asdict(project))
-        else:
-            self.data["projects"].append(asdict(project))
-        self._node(project.id, "project", project.name)
-        self.save()
+        with self._lock:
+            self._refresh_locked()
+            existing = next((p for p in self.data["projects"] if p["id"] == project.id), None)
+            if existing:
+                existing.update(asdict(project))
+            else:
+                self.data["projects"].append(asdict(project))
+            self._node_locked(project.id, "project", project.name)
+            self._persist_locked()
 
     def add_event(self, event: DriftEvent) -> None:
-        self.data["events"].append(asdict(event))
-        self.data["events"] = self.data["events"][-5000:]
-        self.save()
+        with self._lock:
+            self._refresh_locked()
+            self.data["events"].append(asdict(event))
+            self.data["events"] = self.data["events"][-5000:]
+            self._persist_locked()
 
     def packet_for_project(self, project_id: str, task: str, objective: str, query: str = "") -> str:
         """Build a ranked, provenance-preserving working set for one project.
@@ -172,10 +240,18 @@ class DriftLedger:
         ).render()
 
     def _node(self, node_id: str, kind: str, label: str) -> None:
+        with self._lock:
+            self._node_locked(node_id, kind, label)
+
+    def _node_locked(self, node_id: str, kind: str, label: str) -> None:
         if not any(n["id"] == node_id for n in self.data["mind_map"]["nodes"]):
             self.data["mind_map"]["nodes"].append({"id": node_id, "kind": kind, "label": label})
 
     def _edge(self, source: str, target: str, relation: str) -> None:
+        with self._lock:
+            self._edge_locked(source, target, relation)
+
+    def _edge_locked(self, source: str, target: str, relation: str) -> None:
         edge = {"source": source, "target": target, "relation": relation}
         if edge not in self.data["mind_map"]["edges"]:
             self.data["mind_map"]["edges"].append(edge)

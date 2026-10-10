@@ -22,13 +22,35 @@ router = APIRouter(prefix="/api/ui", tags=["ui"])
 
 def _get_brain(request: Request) -> Brain:
     """Get the brain instance from the app state."""
-    brains = getattr(request.app.state, "drift_brains", {})
+    brains = getattr(request.app.state, "drift_brains", {}) or {}
     if not brains:
         raise HTTPException(status_code=503, detail="No Drift organisms running")
     crab_id = request.query_params.get("crab")
     if crab_id and crab_id in brains:
         return brains[crab_id]
+    if crab_id:
+        raise HTTPException(status_code=404, detail="organism not found")
     return next(iter(brains.values()))
+
+
+@router.get("/tasks")
+async def list_tasks(request: Request):
+    from dataclasses import asdict
+    return {"tasks": [asdict(t) for t in _get_brain(request).tasks.list_tasks()[-100:]]}
+
+
+@router.get("/tasks/{task_id}/report")
+async def read_task_report(task_id: str, request: Request):
+    from pathlib import Path
+    brain = _get_brain(request)
+    task = brain.tasks.get_task(task_id)
+    root = Path(brain.env_path).resolve()
+    path = Path(task.last_evidence).resolve() if task and task.last_evidence else root
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=404, detail="report not available")
+    with path.open(encoding="utf-8") as f:
+        text = f.read(12001)
+    return {"task_id": task_id, "text": text[:12000], "truncated": len(text) > 12000}
 
 
 # ---------------------------------------------------------------------------
@@ -105,17 +127,36 @@ async def list_ideas(request: Request, status: str | None = None):
 
 @router.post("/ideas")
 async def create_idea(request: Request):
-    """Create a new idea from text."""
+    """Create a new idea from text (unified with organism route)."""
     brain = _get_brain(request)
     body = await request.json()
-    text = body.get("text", "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required")
-
-    from drift.pipeline import IdeaPipeline
-    pipeline = IdeaPipeline(brain.ledger, brain.tasks, {})
-    idea = pipeline.capture_idea(text)
+    from drift.pipeline import capture_idea_unified
+    try:
+        idea, _task = capture_idea_unified(
+            brain.ledger, brain.tasks, {}, body.get("text", ""),
+            body.get("concepts"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"idea": {"id": idea.id, "text": idea.text, "concepts": idea.concepts, "status": idea.status}}
+
+
+@router.post("/projects")
+async def create_project(request: Request):
+    """Register a project (reuses organism route logic + watch)."""
+    brain = _get_brain(request)
+    body = await request.json()
+    from drift.pipeline import register_project_record
+    try:
+        project = register_project_record(brain.ledger, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    watcher = getattr(brain, "watcher", None)
+    if watcher is not None and project.local_path:
+        try:
+            watcher.register_project(project.id, project.local_path)
+        except Exception:
+            pass
+    return {"ok": True, "project": project.__dict__}
 
 
 @router.post("/ideas/{idea_id}/qualify")
@@ -129,9 +170,87 @@ async def qualify_idea(idea_id: str, request: Request):
     pipeline = IdeaPipeline(brain.ledger, brain.tasks, {})
     try:
         idea = pipeline.qualify_idea(idea_id, qualification)
-    except (KeyError, ValueError) as e:
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"idea": {"id": idea.id, "status": idea.status}}
+
+
+# ---------------------------------------------------------------------------
+# Research sessions (state-lane seam; lazy import so controller wiring stays free)
+# ---------------------------------------------------------------------------
+
+@router.get("/research/sessions")
+async def list_research_sessions(request: Request):
+    """List durable research sessions."""
+    from drift.research import ResearchStore
+    brain = _get_brain(request)
+    store = ResearchStore(brain.env_path)
+    return {"sessions": store.list()}
+
+
+@router.post("/research/sessions")
+async def create_research_session(request: Request):
+    """Create a research session + one bounded task carrying evidence URLs."""
+    from drift.research import ResearchStore
+    brain = _get_brain(request)
+    body = await request.json()
+    query = str(body.get("query", "")).strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    if len(query) > 2000:
+        raise HTTPException(status_code=400, detail="query too long")
+    urls = body.get("urls") or []
+    if not isinstance(urls, list):
+        raise HTTPException(status_code=400, detail="urls must be a list")
+    urls = [str(u)[:1024] for u in urls[:10]]
+    project_id = body.get("project_id")
+    if project_id is not None:
+        project_id = str(project_id)
+        known = [p["id"] for p in brain.ledger.data.get("projects", [])]
+        if project_id not in known:
+            raise HTTPException(status_code=404, detail="project not found")
+    store = ResearchStore(brain.env_path)
+    evidence = "; ".join(urls) if urls else ""
+    objective = f"Research: {query[:200]}"
+    if evidence:
+        objective += f" Evidence: {evidence[:500]}"
+    # Create the bounded task first so the session checkpoint can carry
+    # its identity via the public ResearchStore seam (no private access).
+    task = brain.tasks.create_task(
+        f"Research: {query[:80]}",
+        objective,
+        project_id=project_id,
+        priority=0.5,
+        estimated_cost=0.0,
+    )
+    try:
+        session = store.start(query, task_id=task.id, project_id=project_id, urls=urls)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        brain.tasks.update_task(
+            task.id,
+            objective=f"Research session {session['id']}: {query[:200]}"
+            + (f" Evidence: {evidence[:500]}" if evidence else ""),
+        )
+    except (KeyError, AttributeError, ValueError):
+        pass
+    session = store.get(session["id"]) or session
+    return {"session_id": session["id"], "task_id": task.id, "session": session}
+
+
+@router.get("/research/sessions/{session_id}")
+async def get_research_session(session_id: str, request: Request):
+    """Fetch one durable research session."""
+    from drift.research import ResearchStore
+    brain = _get_brain(request)
+    store = ResearchStore(brain.env_path)
+    session = store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="research session not found")
+    return {"session": session}
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +407,8 @@ async def approve_task(task_id: str, request: Request):
     # Unblock the task
     from drift.task import can_transition
     if task.status == "blocked" and can_transition(task, task._prev_phase):
-        brain.tasks.update_task(task.id, status="pending", phase=task._prev_phase)
+        brain.tasks.update_task(task.id, status="pending", phase=task._prev_phase,
+            attempt_count=0, blockers=[])
         return {"ok": True, "task_id": task_id, "status": "pending"}
     raise HTTPException(status_code=400, detail="Cannot approve this task")
 

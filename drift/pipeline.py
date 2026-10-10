@@ -303,6 +303,89 @@ class IdeaPipeline:
 
 
 # ----------------------------------------------------------------------
+# Shared lane helpers (used by BOTH API families so behavior is unified)
+# ----------------------------------------------------------------------
+
+MAX_IDEA_CHARS = 4000
+
+
+def validate_idea_text(text: str) -> str:
+    """Strip + validate owner idea text. Raises ValueError on bad input."""
+    if not isinstance(text, str):
+        raise ValueError("text must be a string")
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("text is required")
+    if len(cleaned) > MAX_IDEA_CHARS:
+        raise ValueError(f"text exceeds {MAX_IDEA_CHARS} chars")
+    return cleaned
+
+
+def ensure_idea_task(ledger: DriftLedger, tasks: TaskStore, idea_id: str, text: str):
+    """Create exactly one bounded task per captured idea (dedupe by idea id)."""
+    for existing in tasks.list_tasks(limit=1000):
+        if existing.status == "complete":
+            continue
+        if idea_id in (existing.goal + " " + existing.objective):
+            return existing
+    goal = f"Process idea {idea_id}"
+    objective = f"Understand and qualify idea {idea_id}: {text[:200]}"
+    idea = next((i for i in ledger.data["ideas"] if i["id"] == idea_id), {})
+    links = idea.get("related_projects") or []
+    return tasks.create_task(goal, objective, project_id=links[0] if links else None,
+                             priority=0.5, estimated_cost=0.0)
+
+
+def capture_idea_unified(ledger: DriftLedger, tasks: TaskStore, config: dict, text: str,
+                         concepts: list[str] | None = None):
+    """Capture via IdeaPipeline + exactly one deduped bounded task."""
+    pipeline = IdeaPipeline(ledger, tasks, config)
+    cleaned = validate_idea_text(text)
+    extracted = concepts if concepts is not None else pipeline.extract_concepts(cleaned)
+    idea = pipeline.capture_idea(cleaned, extracted)
+    try:
+        pipeline.match_project(idea.id)
+    except KeyError:
+        pass
+    task = ensure_idea_task(ledger, tasks, idea.id, cleaned)
+    return idea, task
+
+
+def register_project_record(ledger: DriftLedger, body: dict) -> Project:
+    """Validate + register a project. Shared by organism + ui routes."""
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise ValueError("name is required")
+    if len(name) > 200:
+        raise ValueError("name too long")
+    repo = str(body.get("repo") or "")
+    if len(repo) > 500:
+        raise ValueError("repo too long")
+    raw_id = str(body.get("id") or name).lower().replace(" ", "-")
+    project_id = re.sub(r"[^a-z0-9\-]+", "-", raw_id).strip("-")[:80]
+    if not project_id:
+        raise ValueError("invalid project id")
+    local_path = body.get("local_path")
+    if local_path is not None:
+        local_path = str(local_path).strip() or None
+        if local_path and len(local_path) > 1024:
+            raise ValueError("local_path too long")
+    try:
+        importance = float(body.get("importance", 0.5))
+    except (TypeError, ValueError):
+        raise ValueError("invalid importance")
+    project = Project(id=project_id, name=name, repo=repo,
+                      local_path=local_path, importance=importance)
+    ledger.add_project(project)
+    ledger.add_event(DriftEvent(
+        kind="observation", source="api",
+        summary=f"Registered project {project_id}: {name}",
+        confidence=0.9, related_projects=[project_id],
+    ))
+    return project
+
+
+# ----------------------------------------------------------------------
 # Top-level helper
 # ----------------------------------------------------------------------
 

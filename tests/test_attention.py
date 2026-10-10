@@ -201,16 +201,17 @@ class TestGenerateCandidates:
         assert len(candidates) >= 1
         assert any(c.source == "unqualified_idea" for c in candidates)
 
-    def test_generates_stalled_task_candidates(self, tmp_path):
+    def test_blocked_tasks_require_explicit_owner_resume(self, tmp_path):
         brain = self._make_brain(tmp_path)
         t = brain.tasks.create_task("work", "do it", priority=0.7)
         # Transition through valid phases to research, then block
         brain.tasks.update_task(t.id, phase="understand")
         brain.tasks.update_task(t.id, phase="connect")
         brain.tasks.update_task(t.id, phase="research")
-        brain.tasks.update_task(t.id, status="blocked")
+        brain.tasks.update_task(t.id, phase="blocked", status="blocked")
         candidates = generate_candidates(brain)
-        assert any(c.source == "stalled_task" for c in candidates)
+        assert not any(c.source == "stalled_task" for c in candidates)
+        assert brain.tasks.get_next_task() is None
 
     def test_generates_stale_project_candidates(self, tmp_path):
         brain = self._make_brain(tmp_path)

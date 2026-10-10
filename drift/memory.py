@@ -9,7 +9,8 @@ from datetime import datetime
 
 from drift.config import config
 from drift.prompts import IMPORTANCE_PROMPT
-from drift.providers import chat_short, embed
+from .providers import chat_short, embed
+from .decisions import decide_memory
 
 logger = logging.getLogger("drift.memory")
 
@@ -24,6 +25,29 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _lexical_relevance(query: str, text: str) -> float:
+    """Cheap deterministic lexical relevance 0..1 (no model, no embeddings)."""
+    import re as _re
+    qt = set(_re.findall(r"[a-z0-9]{3,}", query.lower()))
+    tt = set(_re.findall(r"[a-z0-9]{3,}", text.lower()))
+    if not qt or not tt:
+        return 0.0
+    return len(qt & tt) / max(len(qt), 1)
+
+
+def _lexical_importance(content: str) -> int:
+    """Deterministic 1..10 importance from length/cues. No model call."""
+    c = content.lower()
+    score = 3 + min(3, len(content) // 200)
+    for cue in ("error", "fail", "fact:", "decision", "learned", "important"):
+        if cue in c:
+            score += 1
+            break
+    if "?" in content:
+        score += 1
+    return max(1, min(10, score))
 
 
 class MemoryStream:
@@ -66,8 +90,11 @@ class MemoryStream:
         references: list[str] | None = None,
     ) -> dict:
         """Score importance, compute embedding, append to stream."""
-        # Score importance via LLM
-        importance = self._score_importance(content)
+        decision = decide_memory(content, state=json.dumps([m.get("content", "")[:400] for m in self.memories[-3:]]),
+                                 budget_root=os.path.dirname(self.path))
+        importance = decision["importance_display"]
+        if config.get("llm_scoring_enabled", False) and decision["provider"] != "jev":
+            importance = self._score_importance(content)
 
         # Compute embedding
         try:
@@ -82,6 +109,7 @@ class MemoryStream:
             "kind": kind,
             "content": content,
             "importance": importance,
+            "decision": decision,
             "depth": depth,
             "references": references or [],
             "embedding": embedding,
@@ -102,19 +130,25 @@ class MemoryStream:
         return entry
 
     def retrieve(self, query: str, top_k: int = None) -> list[dict]:
-        """Three-factor retrieval: recency × importance × relevance."""
+        """Three-factor retrieval: recency × importance × relevance.
+
+        Default is lexical relevance (no embeddings, no model). Embeddings
+        are used only when config embeddings_enabled is explicitly True.
+        """
         if top_k is None:
             top_k = config.get("memory_retrieval_count", 3)
 
         if not self.memories:
             return []
 
-        # Embed the query
-        try:
-            query_embedding = embed(query)
-        except Exception as e:
-            logger.error(f"Query embedding failed: {e}")
-            return self.memories[-top_k:]  # fallback to recent
+        use_embed = bool(config.get("embeddings_enabled", False))
+        query_embedding: list[float] = []
+        if use_embed:
+            try:
+                query_embedding = embed(query)
+            except Exception as e:
+                logger.error(f"Query embedding failed: {e}")
+                use_embed = False
 
         decay_rate = config.get("recency_decay_rate", 0.995)
         now = datetime.now()
@@ -132,11 +166,11 @@ class MemoryStream:
             # Importance score (normalized 0-1)
             importance = mem["importance"] / 10.0
 
-            # Relevance score (cosine similarity, already 0-1 range for normalized vectors)
-            if mem.get("embedding") and query_embedding:
+            # Relevance: embeddings if enabled, else lexical fallback.
+            if use_embed and mem.get("embedding") and query_embedding:
                 relevance = _cosine_sim(query_embedding, mem["embedding"])
             else:
-                relevance = 0.0
+                relevance = _lexical_relevance(query, mem.get("content", ""))
 
             score = recency + importance + relevance
             scored.append((score, mem))
@@ -161,17 +195,22 @@ class MemoryStream:
         return self.memories[-n:]
 
     def _score_importance(self, content: str) -> int:
-        """Ask the LLM to rate importance 1-10."""
-        try:
-            result = chat_short(
-                [{"role": "user", "content": content}],
-                instructions=IMPORTANCE_PROMPT,
-            )
-            # Extract the first integer from the response
-            match = re.search(r"\d+", result)
-            if match:
-                score = int(match.group())
-                return max(1, min(10, score))
-        except Exception as e:
-            logger.error(f"Importance scoring failed: {e}")
-        return 5  # default to middle
+        """Deterministic default; LLM scoring only with explicit opt-in.
+
+        Malformed/timeout/schema failures never lose the memory — fall back
+        to lexical score.
+        """
+        if config.get("llm_scoring_enabled", False):
+            try:
+                result = chat_short(
+                    [{"role": "user", "content": content}],
+                    instructions=IMPORTANCE_PROMPT,
+                )
+                # Extract the first integer from the response
+                match = re.search(r"\d+", result)
+                if match:
+                    score = int(match.group())
+                    return max(1, min(10, score))
+            except Exception as e:
+                logger.error(f"Importance scoring failed: {e}")
+        return _lexical_importance(content)

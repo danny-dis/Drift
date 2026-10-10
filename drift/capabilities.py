@@ -93,6 +93,17 @@ def is_capability(name: str) -> bool:
     return name in CAPABILITIES
 
 
+def is_free_only() -> bool:
+    """Deployed default: free-only, never automatic paid fallback."""
+    return bool(config.get("free_only", True))
+
+
+def default_provider_for(capability: str) -> str:
+    """Deterministic default without model calls (cheap gating)."""
+    meta = CAPABILITIES.get(capability, {})
+    return str(meta.get("default", "rule_based"))
+
+
 # ---------------------------------------------------------------------------
 # Provider routing
 # ---------------------------------------------------------------------------

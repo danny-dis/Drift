@@ -9,7 +9,10 @@ All logic is deterministic and cheap — no model calls.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -87,8 +90,11 @@ class BudgetTracker:
     """Track model spend against configured budgets.
 
     Uses ReceiptStore to sum estimated_cost from receipts. Budgets are
-    configured via config.yaml / env vars.
+    configured via config.yaml / env vars. Daily/weekly spend persists
+    to <environment_path>/attention_budget.json across restarts.
     """
+
+    FILENAME = "attention_budget.json"
 
     def __init__(self, receipt_store: Any) -> None:
         self.receipt_store = receipt_store
@@ -96,6 +102,55 @@ class BudgetTracker:
         self._last_daily_reset: float = time.time()
         self._weekly_spend: float = 0.0
         self._daily_spend: float = 0.0
+        self._path = self._budget_path()
+        self._load()
+
+    def _budget_path(self) -> str:
+        receipt_path = getattr(self.receipt_store, "path", None)
+        root = os.path.dirname(receipt_path) if receipt_path else ""
+        if not root:
+            root = config.get("environment_path") or "."
+        return os.path.join(root, self.FILENAME)
+
+    def _load(self) -> None:
+        try:
+            if not os.path.isfile(self._path):
+                return
+            with open(self._path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("budget data must be an object")
+            daily = float(data["daily"])
+            weekly = float(data["weekly"])
+            if (not math.isfinite(daily) or not math.isfinite(weekly)
+                    or daily < 0 or weekly < 0):
+                raise ValueError("budget spend must be finite and non-negative")
+            today = datetime.now(timezone.utc).date()
+            day = today.isoformat()
+            year, week_number, _ = today.isocalendar()
+            week = f"{year}-W{week_number:02d}"
+            if data.get("day") == day:
+                self._daily_spend = daily
+            if data.get("week") == week:
+                self._weekly_spend = weekly
+        except Exception as exc:
+            # An unreadable ledger must never reopen paid admission.
+            logger.error("Invalid attention budget at %s: %s", self._path, exc)
+            self._daily_spend = math.inf
+            self._weekly_spend = math.inf
+
+    def _save(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+            today = datetime.now(timezone.utc).date()
+            year, week_number, _ = today.isocalendar()
+            tmp = self._path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"day": today.isoformat(), "week": f"{year}-W{week_number:02d}",
+                           "daily": self._daily_spend, "weekly": self._weekly_spend}, f)
+            os.replace(tmp, self._path)
+        except Exception as exc:
+            logger.error("Could not persist attention budget at %s: %s", self._path, exc)
 
     def get_daily_budget(self) -> float:
         return float(config.get("attention_daily_budget", 1.0))
@@ -148,14 +203,17 @@ class BudgetTracker:
         """Record a spend (called after a model call)."""
         self._daily_spend += cost
         self._weekly_spend += cost
+        self._save()
 
     def reset_daily(self) -> None:
         self._daily_spend = 0.0
         self._last_daily_reset = time.time()
+        self._save()
 
     def reset_weekly(self) -> None:
         self._weekly_spend = 0.0
         self._last_weekly_reset = time.time()
+        self._save()
 
 
 # ---------------------------------------------------------------------------
@@ -165,8 +223,9 @@ class BudgetTracker:
 def generate_candidates(brain: Any) -> list[Candidate]:
     """Generate candidate tasks from all available signals.
 
-    Signals: GitWatcher changes, stalled/blocked tasks, unqualified ideas,
-    stale projects, inbox files, reflection triggers.
+    Signals: GitWatcher changes, unqualified ideas, stale projects,
+    inbox files, reflection triggers. Blocked work is resumed only through
+    explicit owner approval, never by creating another task.
     """
     candidates: list[Candidate] = []
     seen_dedup: set[str] = set()
@@ -187,7 +246,7 @@ def generate_candidates(brain: Any) -> list[Candidate]:
                         description=f"Analyze commit {change.commit_hash[:8]}: {change.commit_message[:80]}",
                         project_id=change.project_id,
                         base_priority=change.significance,
-                        novelty=0.7,  # new commits are novel
+                        novelty=0.7,
                         staleness=0.5,
                         estimated_cost=0.01,
                         dedup_key=dedup_key,
@@ -195,26 +254,17 @@ def generate_candidates(brain: Any) -> list[Candidate]:
         except Exception as e:
             logger.warning("GitWatcher scan failed during candidate generation: %s", e)
 
-    # 2. Stalled/blocked tasks
-    for task in brain.tasks.list_tasks():
-        if task.status == "blocked":
-            dedup_key = f"stalled:{task.id}"
-            if dedup_key not in seen_dedup:
-                seen_dedup.add(dedup_key)
-                candidates.append(Candidate(
-                    source="stalled_task",
-                    description=f"Resume blocked task: {task.goal}",
-                    project_id=task.project_id,
-                    base_priority=task.priority * 0.8,
-                    novelty=0.3,  # already being worked on
-                    staleness=0.6,
-                    estimated_cost=task.estimated_cost or 0.01,
-                    dedup_key=dedup_key,
-                ))
-
-    # 3. Unqualified ideas
+    # 2. Unqualified ideas not already represented by a task
+    tasks = brain.tasks.list_tasks(limit=100000)
+    referenced_text = [
+        " ".join(f"{task.goal} {task.objective}".casefold().split())
+        for task in tasks
+    ]
     for idea in brain.ledger.data.get("ideas", []):
         if idea.get("status", "captured") == "captured":
+            idea_text = " ".join(str(idea.get("text", "")).casefold().split())
+            if idea_text and any(idea_text in text for text in referenced_text):
+                continue
             idea_id = idea.get("id", "")
             dedup_key = f"idea:{idea_id}"
             if dedup_key not in seen_dedup:
@@ -230,7 +280,7 @@ def generate_candidates(brain: Any) -> list[Candidate]:
                     dedup_key=dedup_key,
                 ))
 
-    # 4. Stale projects (not recently checked)
+    # 3. Stale projects (not recently checked)
     now = time.time()
     for project in brain.ledger.data.get("projects", []):
         pid = project.get("id", "")
@@ -259,7 +309,7 @@ def generate_candidates(brain: Any) -> list[Candidate]:
                     dedup_key=dedup_key,
                 ))
 
-    # 5. Inbox files (pending)
+    # 4. Inbox files (pending)
     if brain._inbox_pending:
         for f in brain._inbox_pending:
             dedup_key = f"inbox:{f.get('name', '')}"
@@ -269,14 +319,14 @@ def generate_candidates(brain: Any) -> list[Candidate]:
                     source="inbox",
                     description=f"Process inbox file: {f.get('name', 'unknown')}",
                     project_id=None,
-                    base_priority=0.7,  # owner-provided = high priority
+                    base_priority=0.7,
                     novelty=0.8,
                     staleness=0.9,
                     estimated_cost=0.01,
                     dedup_key=dedup_key,
                 ))
 
-    # 6. Reflection trigger
+    # 5. Reflection trigger
     if brain.stream and brain.stream.should_reflect():
         dedup_key = "reflection:trigger"
         if dedup_key not in seen_dedup:
@@ -341,7 +391,7 @@ class AttentionEconomy:
         self.budget = BudgetTracker(receipt_store)
 
     def generate_and_select(self, brain: Any) -> Candidate | None:
-        """Generate candidates and return the best one within budget."""
+        """Generate candidates and return the best one within the budget."""
         candidates = generate_candidates(brain)
         if not candidates:
             return None
@@ -356,6 +406,10 @@ class AttentionEconomy:
             priority=candidate.base_priority,
             estimated_cost=candidate.estimated_cost,
         )
+        metadata = {"next_action": candidate.description}
+        if candidate.dedup_key:
+            metadata["last_evidence"] = f"attention_dedup_key={candidate.dedup_key}"
+        task = brain.tasks.update_task(task.id, **metadata)
         # Update project's last_round if applicable
         if candidate.project_id:
             project = next(

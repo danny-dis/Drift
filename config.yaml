@@ -1,15 +1,26 @@
-# Drift Configuration
-provider: "custom"               # "openai" | "openrouter" | "custom"
-model: "auto"                    # DMRX auto-routes to best available
-api_key: "dmrx"
-base_url: "http://localhost:47113/v1"
-ollama_api_key: null
-
-thinking_pace_seconds: 5
-max_thoughts_in_context: 4
-
-# Memory stream settings
+provider: dmrx
+base_url: "http://127.0.0.1:47113/v1"
+api_key: ""
+model: auto-free
+free_only: true
+cost_filter: free
+free_tier_strategy: free_only
+embeddings_enabled: false
+llm_scoring_enabled: false
+shell_enabled: false
+jev_enabled: false
+decisions_llm_fallback: false
+thinking_pace_seconds: 10
+max_context_chars: 7000
+context_max_chars: 7000
+max_output_tokens: 1000
+max_model_calls_per_cycle: 3
+daily_max_model_calls: 200
+max_tool_calls: 8
+max_tool_rounds: 4
+max_cycle_seconds: 120
+max_task_attempts: 4
+environment_path: ./environment
 reflection_threshold: 50
-memory_retrieval_count: 3
-embedding_model: "text-embedding-3-small"
+memory_retrieval_count: 5
 recency_decay_rate: 0.995

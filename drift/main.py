@@ -49,30 +49,66 @@ def _discover_organisms() -> dict[str, Brain]:
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default=os.environ.get("DRIFT_HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("DRIFT_PORT", "47116")))
+    ap.add_argument("--box", default=os.environ.get("DRIFT_BOX", ""))
+    ap.add_argument("--name", default=os.environ.get("DRIFT_NAME", ""))
+    args, _ = ap.parse_known_args()
+
     brains = _discover_organisms()
+    # Non-interactive: explicit box/name or existing boxes; never mandate input.
+    if args.box:
+        os.makedirs(args.box, exist_ok=True)
+        from drift.identity import load_identity_from
+        ident = load_identity_from(args.box)
+        if not ident:
+            ident = {"name": args.name or "drift", "animal": "crab"}
+            with open(os.path.join(args.box, "identity.json"), "w") as f:
+                json.dump(ident, f)
+        ident.setdefault("animal", "crab")
+        brains[_organism_id_from_box(args.box)] = Brain(ident, args.box)
+    elif args.name and not brains:
+        box_path = os.path.join(PROJECT_ROOT, f"{args.name.lower()}_box")
+        os.makedirs(box_path, exist_ok=True)
+        ident = {"name": args.name, "animal": "crab"}
+        with open(os.path.join(box_path, "identity.json"), "w") as f:
+            json.dump(ident, f)
+        brains[args.name.lower()] = Brain(ident, box_path)
 
     if brains:
         names = [b.identity["name"] for b in brains.values()]
         print(f"\n  Found {len(brains)} Drift organism(s): {', '.join(names)}")
-        answer = input("  Create a new one? (y/N) > ").strip().lower()
-        if answer == "y":
+        # Only prompt when interactive AND no explicit flags were given.
+        if not args.box and not args.name and sys.stdin.isatty():
+            answer = input("  Create a new one? (y/N) > ").strip().lower()
+            if answer == "y":
+                identity = create_identity()
+                identity.setdefault("animal", "crab")
+                organism_id = identity["name"].lower()
+                box_path = os.path.join(PROJECT_ROOT, f"{organism_id}_box")
+                brains[organism_id] = Brain(identity, box_path)
+    else:
+        if sys.stdin.isatty() and not args.name:
+            print("\n  No Drift organisms found. Let's create one!")
             identity = create_identity()
             identity.setdefault("animal", "crab")
             organism_id = identity["name"].lower()
             box_path = os.path.join(PROJECT_ROOT, f"{organism_id}_box")
             brains[organism_id] = Brain(identity, box_path)
-    else:
-        print("\n  No Drift organisms found. Let's create one!")
-        identity = create_identity()
-        identity.setdefault("animal", "crab")
-        organism_id = identity["name"].lower()
-        box_path = os.path.join(PROJECT_ROOT, f"{organism_id}_box")
-        brains[organism_id] = Brain(identity, box_path)
+        else:
+            # Non-interactive default box (existing boxes safe, never touched).
+            nm = args.name or "drift"
+            box_path = args.box or os.path.join(PROJECT_ROOT, f"{nm.lower()}_box")
+            os.makedirs(box_path, exist_ok=True)
+            ident = {"name": nm, "animal": "crab"}
+            with open(os.path.join(box_path, "identity.json"), "w") as f:
+                json.dump(ident, f)
+            brains[nm.lower()] = Brain(ident, box_path)
 
     app = create_app(brains)
     names = [b.identity["name"] for b in brains.values()]
     print(f"\n  Starting {len(brains)} Drift organism(s): {', '.join(names)}")
-    print("  Open http://localhost:8000\n")
-    port = int(os.environ.get("DRIFT_PORT", 47116))
-    print(f"  Open http://localhost:{port}\n")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    print(f"  Open http://{args.host}:{args.port}\n")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")

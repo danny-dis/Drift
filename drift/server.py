@@ -9,6 +9,7 @@ import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +23,52 @@ logger = logging.getLogger("drift.server")
 
 app = FastAPI(title="Drift")
 brains: dict[str, Brain] = {}
+_tasks: set = set()  # tracked handles for graceful shutdown
+
+
+def _origin_allowed(connection) -> bool:
+    origin = connection.headers.get("origin")
+    if not origin:
+        return True  # native clients; browser requests supply Origin
+    scheme = "https" if connection.url.scheme in ("https", "wss") else "http"
+    same_origin = f"{scheme}://{connection.headers.get('host', '')}"
+    allowed = os.environ.get("DRIFT_ALLOWED_ORIGINS", "").split(",")
+    return origin == same_origin or origin in [o.strip() for o in allowed if o.strip()]
+
+
+@app.middleware("http")
+async def _bearer_guard(request: Request, call_next):
+    from fastapi.responses import JSONResponse
+    import hmac
+    if not _origin_allowed(request):
+        return JSONResponse({"detail": "foreign origin blocked"}, status_code=403)
+    token = os.environ.get("DRIFT_API_TOKEN", "")
+    if token and request.url.path.startswith("/api/"):
+        got = request.headers.get("authorization", "")
+        if not hmac.compare_digest(got, f"Bearer {token}"):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+async def _authorize_websocket(ws: WebSocket) -> bool:
+    import hmac
+    token = os.environ.get("DRIFT_API_TOKEN", "")
+    if not _origin_allowed(ws):
+        await ws.close(code=4403)
+        return False
+    if token and not hmac.compare_digest(ws.headers.get("authorization", ""), f"Bearer {token}"):
+        await ws.close(code=4401)
+        return False
+    return True
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    for t in list(_tasks):
+        t.cancel()
+    if _tasks:
+        await asyncio.gather(*_tasks, return_exceptions=True)
+    _tasks.clear()
 
 
 def create_app(all_brains: dict[str, Brain]) -> FastAPI:
@@ -29,10 +76,14 @@ def create_app(all_brains: dict[str, Brain]) -> FastAPI:
     global brains
     brains = all_brains
     app.state.drift_brains = brains
-    if organism_router not in app.router.routes:
-        app.include_router(organism_router)
-    if ui_router not in app.router.routes:
-        app.include_router(ui_router)
+    for brain in brains.values():
+        if not hasattr(brain, "ledger"):
+            brain._init_stores()
+    if getattr(app.state, "routes_installed", False):
+        return app
+    app.include_router(organism_router)
+    app.include_router(ui_router)
+    app.state.routes_installed = True
 
     # Register frontend catch-all LAST so it doesn't shadow API routes
     frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -45,9 +96,18 @@ def create_app(all_brains: dict[str, Brain]) -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def serve_frontend(full_path: str):
-            file_path = os.path.join(frontend_dist, full_path)
-            if os.path.isfile(file_path):
-                return FileResponse(file_path)
+            from pathlib import Path
+            if full_path.startswith("api/"):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="endpoint not found")
+            base = Path(frontend_dist).resolve()
+            target = (base / full_path).resolve()
+            try:
+                target.relative_to(base)  # traversal guard (not prefix)
+            except ValueError:
+                return FileResponse(os.path.join(frontend_dist, "index.html"))
+            if target.is_file():
+                return FileResponse(str(target))
             return FileResponse(os.path.join(frontend_dist, "index.html"))
 
     return app
@@ -55,22 +115,28 @@ def create_app(all_brains: dict[str, Brain]) -> FastAPI:
 
 def _get_brain(request: Request) -> Brain:
     """Look up brain by ?crab=ID for backwards compatibility."""
+    from fastapi import HTTPException
     crab_id = request.query_params.get("crab")
-    if crab_id and crab_id in brains:
+    if not brains:
+        raise HTTPException(status_code=503, detail="no organisms running")
+    if crab_id:
+        if crab_id not in brains:
+            raise HTTPException(status_code=404, detail="organism not found")
         return brains[crab_id]
     return next(iter(brains.values()))
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+if os.environ.get("DRIFT_ALLOWED_ORIGINS"):
+    app.add_middleware(CORSMiddleware,
+        allow_origins=os.environ["DRIFT_ALLOWED_ORIGINS"].split(","),
+        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 
 @app.websocket("/ws/{crab_id}")
 async def websocket_endpoint(ws: WebSocket, crab_id: str):
+    if not await _authorize_websocket(ws):
+        return
     brain = brains.get(crab_id)
     if not brain:
         await ws.close(code=4004)
@@ -88,6 +154,8 @@ async def websocket_endpoint(ws: WebSocket, crab_id: str):
 
 @app.websocket("/ws")
 async def websocket_default(ws: WebSocket):
+    if not await _authorize_websocket(ws):
+        return
     if not brains:
         await ws.close(code=4004)
         return
@@ -122,6 +190,9 @@ async def create_crab(request: Request):
     animal = body.get("animal", "crab").strip().lower()
     if not name:
         return {"ok": False, "error": "name is required"}
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
+        return {"ok": False, "error": "invalid name (letters/numbers/_/- only)"}
 
     crab_id = name.lower()
     if crab_id in brains:
@@ -146,7 +217,9 @@ async def create_crab(request: Request):
     brain = Brain(identity, box_path)
     brains[crab_id] = brain
     app.state.drift_brains = brains
-    asyncio.create_task(brain.run())
+    t = asyncio.create_task(brain.run())
+    _tasks.add(t)
+    t.add_done_callback(_tasks.discard)
     return {"ok": True, "id": crab_id, "name": name, "animal": animal}
 
 
@@ -157,7 +230,8 @@ async def get_identity(request: Request):
 
 @app.get("/api/events")
 async def get_events(request: Request, limit: int = 100):
-    return _get_brain(request).events[-limit:]
+    count = max(0, min(limit, 1000))
+    return _get_brain(request).ledger.data.get("events", [])[-count:] if count else []
 
 
 @app.get("/api/raw")
@@ -231,9 +305,12 @@ async def get_files(request: Request):
 @app.get("/api/files/{path:path}")
 async def get_file(request: Request, path: str):
     brain = _get_brain(request)
-    env_root = os.path.realpath(brain.env_path)
-    full = os.path.realpath(os.path.join(env_root, path))
-    if not full.startswith(env_root):
+    from pathlib import Path
+    env_root = Path(os.path.realpath(brain.env_path))
+    full = (env_root / path).resolve()
+    try:
+        full.relative_to(env_root)
+    except ValueError:
         return {"path": path, "content": "Blocked: path outside environment."}
     try:
         with open(full, "r") as f:

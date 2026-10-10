@@ -29,6 +29,12 @@ def test_foreign_host_cannot_rebind_local_api(tmp_path):
 
 def test_token_protects_api_but_not_token_entry_page(tmp_path, monkeypatch):
     br, client = brain(tmp_path)
+    # Test the real auth middleware against a public page fixture, not a
+    # developer's ignored frontend build. Python CI runs without npm artifacts.
+    from fastapi.responses import HTMLResponse
+    from fastapi.routing import APIRoute
+    public_page = APIRoute('/', lambda: HTMLResponse('<html>Token entry</html>'), methods=['GET'])
+    monkeypatch.setattr(client.app.router, 'routes', [public_page, *client.app.router.routes])
     monkeypatch.setenv('DRIFT_API_TOKEN', 'fixture-only')
     assert client.get('/').status_code == 200
     assert client.get('/api/status').status_code == 401

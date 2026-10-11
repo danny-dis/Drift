@@ -466,6 +466,19 @@ SESSION_STATES = (
     "needs_review",
 )
 
+RESEARCH_PHASES = (
+    "selecting",
+    "researching",
+    "synthesizing",
+    "writing",
+    "verifying",
+    "publishing",
+    "sleeping",
+)
+MAX_LINEAGE_ITEMS = 100
+MAX_LINEAGE_DETAIL_CHARS = 4000
+MAX_REPAIR_CONTEXT = 3
+
 PROPOSAL_STATES = (
     "proposed",
     "accepted",
@@ -628,15 +641,21 @@ class ResearchStore:
             _canonical_url(url)  # validate syntax; fetch tool enforces network boundary
         now = _utcnow()
         candidates, outline = _build_candidates(query.strip())
+        if not config.get("research_candidates_enabled", True):
+            candidates, outline = [], []
+
         session = {
             "id": uuid.uuid4().hex,
             "requested_urls": requested,
             "query": query.strip(),
+            "query_history": [{"text": query.strip(), "at": now, "kind": "initial"}],
             "task_id": task_id,
             "project_id": project_id,
             "strategy": strategy,
             "strategy_reason": "caller-selected" if strategy else "default",
             "state": "selecting",
+            "phase": "selecting",
+            "next_action": "select_research_scope",
             "rev": 1,
             "created_at": now,
             "updated_at": now,
@@ -647,8 +666,16 @@ class ResearchStore:
             "outline": outline,
             "coverage": {},
             "repairs": 0,
+            "repair_context": [],
+            "report_attempts": [],
             "errors": [],
+            "notes": [],
+            "tools": [],
+            "scripts": [],
+            "file_changes": [],
             "report": None,
+            "reports": [],
+
             "verified": False,
             "checkpoint": {"rev": 1, "updated_at": now},
         }
@@ -659,7 +686,167 @@ class ResearchStore:
             self._release()
         return copy.deepcopy(session)
 
+    @staticmethod
+    def _next_action(phase: str) -> str:
+        return {
+            "selecting": "select_research_scope",
+            "researching": "research",
+            "synthesizing": "synthesize_sources",
+            "writing": "write_report",
+            "verifying": "verify_report",
+            "publishing": "review_before_publish",
+            "sleeping": "wait_for_next_cycle",
+        }[phase]
+
+    @staticmethod
+    def _bounded_details(details: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(details, dict):
+            raise ValueError("step details must be an object")
+        try:
+            encoded = json.dumps(details, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("step details must be JSON serializable") from exc
+        if len(encoded) > MAX_LINEAGE_DETAIL_CHARS:
+            raise ValueError(f"step details exceed {MAX_LINEAGE_DETAIL_CHARS} characters")
+        return copy.deepcopy(details)
+
+    def _lineage_path(self, value: Any) -> tuple[bool, str]:
+        if not isinstance(value, str) or not value or len(value) > 1024:
+            return False, "path must be a nonempty relative path"
+        normalized = value.replace("\\", "/")
+        parts = normalized.split("/")
+        if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized) or ".." in parts:
+            return False, "path escapes the research root"
+        root = os.path.realpath(self.root)
+        target = os.path.realpath(os.path.join(root, *parts))
+        try:
+            if os.path.commonpath((root, target)) != root:
+                return False, "path escapes the research root"
+        except ValueError:
+            return False, "path escapes the research root"
+        return True, "/".join(parts)
+
+    def record_step(self, session_id: str, phase: str, kind: str,
+                    details: dict[str, Any]) -> dict[str, Any]:
+        """Persist bounded provenance only; scripts are recorded, never run."""
+        if phase not in RESEARCH_PHASES:
+            raise ValueError(f"unknown research phase {phase!r}")
+        if kind not in {"query", "note", "tool", "script", "file_change", "checkpoint", "error"}:
+            raise ValueError(f"unknown research step kind {kind!r}")
+        entry = self._bounded_details(details)
+        now = _utcnow()
+        self._acquire()
+        try:
+            session = self._load_locked(session_id)
+            if session is None:
+                raise KeyError(f"unknown session {session_id!r}")
+            if kind == "query":
+                text = entry.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("query step requires nonempty text")
+                session.setdefault("query_history", []).append({"text": text[:2000], "at": now, "kind": "follow_up"})
+                session["query_history"] = session["query_history"][-MAX_LINEAGE_ITEMS:]
+            elif kind == "note":
+                session.setdefault("notes", []).append({**entry, "at": now})
+                session["notes"] = session["notes"][-MAX_LINEAGE_ITEMS:]
+            elif kind == "tool":
+                session.setdefault("tools", []).append({**entry, "at": now})
+                session["tools"] = session["tools"][-MAX_LINEAGE_ITEMS:]
+            elif kind == "script":
+                ok, safe_path = self._lineage_path(entry.get("path"))
+                if not ok:
+                    raise ValueError(safe_path)
+                entry["path"] = safe_path
+                session.setdefault("scripts", []).append({**entry, "at": now, "executed_by_store": False})
+                session["scripts"] = session["scripts"][-MAX_LINEAGE_ITEMS:]
+            elif kind == "file_change":
+                ok, safe_path = self._lineage_path(entry.get("path"))
+                change = {**entry, "at": now, "accepted": ok}
+                if ok:
+                    change["path"] = safe_path
+                else:
+                    change["error"] = safe_path
+                session.setdefault("file_changes", []).append(change)
+                session["file_changes"] = session["file_changes"][-MAX_LINEAGE_ITEMS:]
+            elif kind == "error":
+                session.setdefault("errors", []).append(entry)
+                session["errors"] = session["errors"][-MAX_LINEAGE_ITEMS:]
+            session["phase"] = phase
+            session["next_action"] = self._next_action(phase)
+            session["rev"] = int(session.get("rev", 0)) + 1
+            session["updated_at"] = now
+            session["checkpoint"] = {"rev": session["rev"], "phase": phase,
+                                     "next_action": session["next_action"], "updated_at": now}
+            self._save_locked(session)
+            return copy.deepcopy(session)
+        finally:
+            self._release()
+
+    def resume(self, session_id: str) -> dict[str, Any]:
+        """Return persisted session evidence unchanged with a deterministic checkpoint."""
+        session = self.get(session_id)
+        if session is None:
+            raise KeyError(f"unknown session {session_id!r}")
+        phase = session.get("phase")
+        if phase not in RESEARCH_PHASES:
+            phase = "verifying" if session.get("state") == "needs_review" else (
+                "sleeping" if session.get("state") == "complete" else session.get("state", "selecting"))
+        session["phase"] = phase
+        session["next_action"] = self._next_action(phase)
+        session.setdefault("checkpoint", {})
+        session["checkpoint"].setdefault("rev", session.get("rev", 0))
+        session["checkpoint"].setdefault("updated_at", session.get("updated_at", _utcnow()))
+        session["checkpoint"].update({"phase": phase, "next_action": session["next_action"]})
+        return session
+
+    def request_repair(self, session_id: str, *, max_attempts: int = 1) -> dict[str, Any]:
+        """Admit one explicit owner retry atomically without replacing evidence."""
+        self._acquire()
+        try:
+            session = self._load_locked(session_id)
+            if session is None:
+                raise KeyError(f"unknown session {session_id!r}")
+            if session["state"] == "researching" and session.get("repair_pending"):
+                return copy.deepcopy(session)  # retry a partially committed admission
+            if session["state"] != "needs_review":
+                raise ValueError("only needs_review research can resume")
+            used = int(session.get("owner_repair_attempts", 0))
+            if used >= max_attempts or int(session.get("repairs", 0)) >= MAX_REPAIRS:
+                raise ValueError("research repair budget exhausted")
+            session["owner_repair_attempts"] = used + 1
+            session["repair_pending"] = True
+            session["state"] = "researching"
+            session["phase"] = "verifying"
+            session["next_action"] = "repair_report"
+            session["rev"] += 1
+            session["updated_at"] = _utcnow()
+            session["checkpoint"] = {"rev": session["rev"], "phase": session["phase"],
+                                     "next_action": session["next_action"], "updated_at": session["updated_at"]}
+            self._save_locked(session)
+            return copy.deepcopy(session)
+        finally:
+            self._release()
+
+    def confirm_repair(self, session_id: str) -> dict[str, Any]:
+        """Clear the recovery marker only after the original task is requeued."""
+        self._acquire()
+        try:
+            session = self._load_locked(session_id)
+            if session is None:
+                raise KeyError(f"unknown session {session_id!r}")
+            if session.get("repair_pending"):
+                session["repair_pending"] = False
+                session["rev"] += 1
+                session["updated_at"] = _utcnow()
+                session["checkpoint"] = {"rev": session["rev"], "phase": session["phase"],
+                                         "next_action": session["next_action"], "updated_at": session["updated_at"]}
+                self._save_locked(session)
+            return copy.deepcopy(session)
+        finally:
+            self._release()
+
     def add_source(self, session_id: str, url: str, text: str) -> dict[str, Any]:
+
         if not text or not text.strip():
             raise ValueError("text required")
         self._acquire()
@@ -705,9 +892,12 @@ class ResearchStore:
                 })
             session["conflicts"] = self._find_conflicts(session["claims"])
             session["state"] = "researching"
+            session["phase"] = "researching"
+            session["next_action"] = self._next_action("researching")
             session["rev"] += 1
             session["updated_at"] = now
-            session["checkpoint"] = {"rev": session["rev"], "updated_at": now}
+            session["checkpoint"] = {"rev": session["rev"], "phase": session["phase"],
+                                     "next_action": session["next_action"], "updated_at": now}
             self._save_locked(session)
             out = copy.deepcopy(source)
             out["duplicate"] = False
@@ -747,16 +937,45 @@ class ResearchStore:
                                         "complete", "needs_review"):
                 raise ValueError(f"cannot finish in state {session['state']!r}")
             errors = self._report_errors(session, report)
+            try:
+                encoded_report = json.dumps(report, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                encoded_report = repr(report)
+            if len(encoded_report) > MAX_REPORT_CHARS:
+                report_snapshot: Any = {"truncated": True, "preview": encoded_report[:MAX_REPORT_CHARS]}
+            else:
+                report_snapshot = copy.deepcopy(report)
+            attempt = {"at": _utcnow(), "report": report_snapshot, "errors": list(errors)}
+            session.setdefault("report_attempts", []).append(attempt)
+            session["report_attempts"] = session["report_attempts"][-MAX_LINEAGE_ITEMS:]
+            if errors:
+                session.setdefault("repair_context", []).append({
+                    "at": attempt["at"], "errors": list(errors),
+                    "previous_report": copy.deepcopy(session.get("report")),
+                    "attempt": len(session["report_attempts"]),
+                })
+                session["repair_context"] = session["repair_context"][-MAX_REPAIR_CONTEXT:]
+
             if errors:
                 if session["repairs"] >= MAX_REPAIRS:
+                    session["errors"] = errors
+                    session["rev"] += 1
+                    session["updated_at"] = _utcnow()
+                    session["checkpoint"] = {"rev": session["rev"], "phase": "verifying",
+                                             "next_action": "verify_report", "updated_at": session["updated_at"]}
+                    self._save_locked(session)
+                    self._write_markdown(session)
                     raise ValueError(f"repair limit {MAX_REPAIRS} exceeded: {errors}")
                 session["repairs"] += 1
                 session["errors"] = errors
                 session["state"] = "needs_review"
+                session["phase"] = "verifying"
+                session["next_action"] = self._next_action("verifying")
                 session["verified"] = False
                 session["rev"] += 1
                 session["updated_at"] = _utcnow()
-                session["checkpoint"] = {"rev": session["rev"],
+                session["checkpoint"] = {"rev": session["rev"], "phase": session["phase"],
+                                         "next_action": session["next_action"],
                                          "updated_at": session["updated_at"]}
                 self._save_locked(session)
                 return copy.deepcopy(session)
@@ -767,23 +986,33 @@ class ResearchStore:
                 "citations": [dict(c) for c in report.get("citations", [])],
                 "proposals": proposals,
             }
+            session.setdefault("reports", []).append({"at": _utcnow(), "report": copy.deepcopy(stored)})
+            session["reports"] = session["reports"][-MAX_LINEAGE_ITEMS:]
             session["report"] = stored
             session["errors"] = []
             session["coverage"] = self._coverage(session)
             for cand, cov in zip(session["candidates"],
                                  session["coverage"].get("hypotheses", [])):
-                cand["support"] = cov["support"]
+                cand["lexical_coverage"] = cov["lexical_coverage"]
+                cand["support"] = cov["lexical_coverage"]
             session["state"] = "verifying"
+            session["phase"] = "verifying"
+            session["next_action"] = self._next_action("verifying")
             if not session["sources"] or stored["findings"] and not stored["citations"]:
                 session["state"] = "needs_review"
+                session["phase"] = "verifying"
+                session["next_action"] = self._next_action("verifying")
                 session["verified"] = False
             else:
                 session["state"] = "complete"
+                session["phase"] = "sleeping"
+                session["next_action"] = self._next_action("sleeping")
                 session["verified"] = False  # citation integrity is not factual verification
                 session["citation_integrity_checked"] = bool(stored["citations"])
             session["rev"] += 1
             session["updated_at"] = _utcnow()
-            session["checkpoint"] = {"rev": session["rev"],
+            session["checkpoint"] = {"rev": session["rev"], "phase": session["phase"],
+                                     "next_action": session["next_action"],
                                      "updated_at": session["updated_at"]}
             self._save_locked(session)
             self._write_markdown(session)
@@ -865,8 +1094,10 @@ class ResearchStore:
             ht = _tokens(cand["text"]) - _STOPWORDS
             overlap = len(ht & pool)
             denom = max(len(ht), 1)
-            hyps.append({"text": cand["text"],
-                         "support": round(min(1.0, overlap / denom), 3)})
+            coverage = round(min(1.0, overlap / denom), 3)
+            hyps.append({"text": cand["text"], "lexical_coverage": coverage,
+                         "support": coverage})
+
         covered = 0
         for item in session["outline"]:
             it = _tokens(item) - _STOPWORDS
@@ -938,6 +1169,16 @@ class ResearchStore:
             for p in rep["proposals"]:
                 lines.append(f"- [{p['state']}] {p['title']} "
                              f"({p['id']}; provenance {p['provenance']})")
+        for title, key in (("Query history", "query_history"), ("Notes", "notes"),
+                           ("Executed tool metadata", "tools"), ("Scripts recorded (not executed by ResearchStore)", "scripts"),
+                           ("File changes", "file_changes"), ("Errors", "errors"),
+                           ("Report attempts", "report_attempts"), ("Prior reports", "reports")):
+            entries = session.get(key, [])
+            if not entries:
+                continue
+            lines.extend(("", f"## {title}"))
+            for entry in entries:
+                lines.append("- " + json.dumps(entry, ensure_ascii=False, default=str))
         return "\n".join(lines) + "\n"
 
     def _write_markdown(self, session: dict[str, Any]) -> str:

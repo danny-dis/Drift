@@ -11,7 +11,8 @@ type EvidenceItem = { summary: string; evidence: { url?: string; title?: string;
 type Candidate = { source: string; description: string; project_id: string; base_priority: number; estimated_cost: number };
 type Receipt = { task_id: string; estimated_tokens: number; estimated_cost: number; model_provider: string; timestamp: string; context_budget?: number };
 type Approval = { id: string; goal: string; objective?: string; project_id?: string; blockers?: string[]; phase?: string };
-type Session = { id: string; query: string; state: string; project_id?: string; errors?: string[]; sources?: {id: string; url: string; excerpt: string}[]; report?: {findings?: string[]; citations?: {source_id: string; quote?: string}[]} | null };
+type Session = { id: string; query: string; state: string; phase?: string; next_action?: string; rev?: number; repairs?: number; project_id?: string; errors?: string[]; query_history?: unknown[]; notes?: unknown[]; tools?: unknown[]; scripts?: unknown[]; file_changes?: unknown[]; report_attempts?: unknown[]; repair_context?: unknown[]; sources?: {id: string; url: string; excerpt: string}[]; report?: {findings?: string[]; citations?: {source_id: string; quote?: string}[]} | null };
+type Decisions = { loop: Record<string, unknown>; memory: Record<string, unknown> };
 type Task = {id: string; goal: string; status: string; phase: string; last_evidence?: string; blockers?: string[]};
 
 type Tab = "status" | "inbox" | "projects" | "research" | "attention" | "approvals";
@@ -47,6 +48,7 @@ export default function DriftApp() {
   const [findings, setFindings] = useState<{ summary: string; confidence?: number; timestamp?: string; evidence?: unknown }[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [budget, setBudget] = useState<Record<string, unknown>>({});
+  const [decisions, setDecisions] = useState<Decisions | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [receiptTotal, setReceiptTotal] = useState<number | null>(null);
@@ -87,12 +89,13 @@ export default function DriftApp() {
         return await res.json();
       } catch { return null; }
     };
-    const [id, ip, uj, rs, ev, bg, cd, rc, ap, ss, ts] = await Promise.all([
+    const [id, ip, uj, rs, ev, bg, cd, rc, ap, ss, ts, dc] = await Promise.all([
       get("/api/identity"), get("/api/ui/ideas"), get("/api/ui/projects"),
       get("/api/ui/research"), get("/api/ui/research/evidence"), get("/api/ui/budget"),
       get("/api/ui/attention/candidates"), get("/api/ui/receipts"), get("/api/ui/approvals"),
-      get("/api/ui/research/sessions"), get("/api/ui/tasks"),
+      get("/api/ui/research/sessions"), get("/api/ui/tasks"), get("/api/ui/decisions"),
     ]);
+    setDecisions(dc || null);
     if (ts) setTasks(ts.tasks || []);
     if (id) setIdentity(id);
     if (ip) setIdeas(ip.ideas || []);
@@ -166,6 +169,16 @@ export default function DriftApp() {
       if (!res.ok) { setSessionsNote(`session ${id}: ${res.status}`); return; }
       const data = await res.json(); setSessionDetail(data.session);
     } catch (e) { setSessionsNote(String(e)); }
+  };
+
+  const resumeSession = async (id: string) => {
+    try {
+      const res = await fetch(`/api/ui/research/sessions/${id}/resume`, {method: "POST", headers: authHeaders(), body: "{}"});
+      const data = await res.json();
+      if (!res.ok) { setSessionsNote(`Resume rejected: ${data.detail || res.status}`); return; }
+      setSessionDetail(data.session); setSessionsNote("Same task queued for repair; evidence retained.");
+      await loadAll();
+    } catch (e) { setSessionsNote(`Resume failed: ${String(e)}`); }
   };
 
   const openTaskReport = async (id: string) => {
@@ -364,7 +377,10 @@ export default function DriftApp() {
             {sessionDetail && <article aria-label="Research report">
               <h3>{sessionDetail.query}</h3>
               <p>Status: {sessionDetail.state}. Citation integrity is not fact verification.</p>
+              <p>Phase: {sessionDetail.phase || "unavailable"} · next action: {sessionDetail.next_action || "unavailable"} · checkpoint revision: {sessionDetail.rev ?? "unavailable"}</p>
               <button onClick={() => openSession(sessionDetail.id)}>Refresh report</button>
+              {sessionDetail.state === "needs_review" && <button onClick={() => resumeSession(sessionDetail.id)}>Resume same task for repair</button>}
+              <details><summary>Retained research provenance</summary><pre>{JSON.stringify({query_history: sessionDetail.query_history, notes: sessionDetail.notes, tools: sessionDetail.tools, scripts: sessionDetail.scripts, file_changes: sessionDetail.file_changes, report_attempts: sessionDetail.report_attempts, repair_context: sessionDetail.repair_context}, null, 2).slice(0, 18000)}</pre></details>
               <ul>{sessionDetail.errors?.map((e,k) => <li key={k}>{e}</li>)}</ul>
               <ul>{sessionDetail.report?.findings?.map((f,k) => <li key={k}>{f}</li>)}</ul>
               {sessionDetail.report?.citations?.map((c,k) => {
@@ -385,6 +401,12 @@ export default function DriftApp() {
             <h3>Tasks</h3>
             <ul>{tasks.map(t => <li key={t.id}>{t.goal} · {t.status} / {t.phase} {t.last_evidence && <button onClick={() => openTaskReport(t.id)}>Read report</button>}{t.blockers?.length ? <small> · {t.blockers.join("; ")}</small> : null}</li>)}</ul>
             {taskReport && <pre>{taskReport}</pre>}
+            <h3>Decision telemetry</h3>
+            {decisions ? <>
+              <p>Recorded loop and memory decisions; keyword gates are not semantic judgments. Unmeasured metrics remain unavailable.</p>
+              <details open><summary>Loop decisions</summary><pre>{JSON.stringify(decisions.loop, null, 2)}</pre></details>
+              <details><summary>Memory decision summary (no raw memory)</summary><pre>{JSON.stringify(decisions.memory, null, 2)}</pre></details>
+            </> : <p>Decision telemetry unavailable; check backend/authentication.</p>}
             <h3>Budget</h3>
             {Object.keys(budget).length === 0 ? <p><small>No budget data (backend unavailable).</small></p> : (
               <ul>{Object.entries(budget).map(([k, v]) => <li key={k}>{k}: {String(v)}</li>)}</ul>

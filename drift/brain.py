@@ -38,6 +38,7 @@ from drift.tools import execute_tool, ensure_venv
 from drift.watcher import GitWatcher
 from drift.attention import AttentionEconomy, generate_candidates, select_best_candidate, BudgetTracker
 from drift.providers import CallBudget
+from drift.loop_decisions import inspect_batch
 
 logger = logging.getLogger("drift.brain")
 
@@ -235,7 +236,7 @@ class Brain:
     }
     _PDF_EXTS = {".pdf"}
     _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-    _IGNORE_FILES = {"memory_stream.jsonl", "identity.json"}
+    _IGNORE_FILES = {"memory_stream.jsonl", "identity.json", "loop_decisions.json", "decision_status.json", "decisions.jsonl", "call_budget.json"}
     _INTERNAL_ROOT_FILES = {"projects.md"}
 
     PLAN_INTERVAL = 10
@@ -272,6 +273,8 @@ class Brain:
         self._last_input_sig: str = ""
         self._idle_cycles: int = 0
         self._current_session_id: str | None = None
+        self._loop_metrics = self._load_loop_metrics()
+        self._last_gate_action = "sleep"
 
         # Conversation state
         self._user_message: str | None = None
@@ -698,8 +701,11 @@ class Brain:
         bound = int(config.get("max_context_chars", 7000))
         instructions = (instructions or "")[:max(0, bound // 3)]
         input_list[:] = repack_context(input_list, bound - len(instructions))
+        import time
+        call_started = time.monotonic()
         response = await asyncio.to_thread(chat, input_list, True, instructions,
             config.get("max_output_tokens", 1000), budget_root=self.env_path)
+        self._record_model_call(response, call_started)
         if task is not None:
             final_meta = dict(meta or {})
             final_meta.update(context_budget=bound,
@@ -740,6 +746,62 @@ class Brain:
     # Think cycle (bounded, task-based)
     # ------------------------------------------------------------------
 
+    def _load_loop_metrics(self) -> dict:
+        path = os.path.join(self.env_path, "loop_decisions.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                actions = saved.get("actions", {})
+                return {
+                    "actions": {name: max(0, int(actions.get(name, 0))) for name in
+                                ("research", "reflect", "plan", "respond", "sleep", "ignore")},
+                    "model_calls": max(0, int(saved.get("model_calls", 0))),
+                    "model_latency_ms": max(0, int(saved.get("model_latency_ms", 0))),
+                    "output_chars": max(0, int(saved.get("output_chars", 0))),
+                    "skipped_low": max(0, int(saved.get("skipped_low", 0))),
+                    "missed_high_value": max(0, int(saved.get("missed_high_value", 0))),
+                }
+        except (OSError, ValueError, TypeError):
+            pass
+        return {"actions": {name: 0 for name in
+                ("research", "reflect", "plan", "respond", "sleep", "ignore")},
+                "model_calls": 0, "model_latency_ms": 0, "output_chars": 0,
+                "skipped_low": 0, "missed_high_value": 0}
+
+    def _persist_loop_metrics(self) -> None:
+        path = os.path.join(self.env_path, "loop_decisions.json")
+        temp = path + ".tmp"
+        try:
+            os.makedirs(self.env_path, exist_ok=True)
+            with open(temp, "w", encoding="utf-8") as f:
+                json.dump(self._loop_metrics, f, separators=(",", ":"))
+            os.replace(temp, path)
+        except OSError:
+            logger.warning("Could not persist loop decision metrics")
+
+    def _record_action(self, action: str) -> None:
+        if action not in self._loop_metrics["actions"]:
+            action = "ignore"
+        self._loop_metrics["actions"][action] += 1
+        self._last_gate_action = action
+        self._persist_loop_metrics()
+
+    def _record_model_call(self, response: dict, started: float) -> None:
+        import time
+        self._loop_metrics["model_calls"] += 1
+        self._loop_metrics["model_latency_ms"] += max(0, int((time.monotonic() - started) * 1000))
+        text = response.get("text") if isinstance(response, dict) else ""
+        self._loop_metrics["output_chars"] += len(text or "")
+        self._persist_loop_metrics()
+
+    def decision_status(self) -> dict:
+        """Return restart-persistent, JSON-safe loop metrics without raw input."""
+        self._persist_loop_metrics()
+        return {"action": self._last_gate_action, **json.loads(json.dumps(self._loop_metrics)),
+                "missed_high_value": None,
+                "quality_scope": "unlabeled operational counters; missed high-value rate is unmeasured"}
+
     def should_think(self, pending_work: bool) -> tuple[bool, str]:
         """Deterministic gate: user input/work priority, else idle/backoff.
 
@@ -748,10 +810,40 @@ class Brain:
         Existing pending tasks can never bypass budget admission (checked
         separately in _think_once).
         """
-        if self._user_message or self._inbox_pending or pending_work:
+        if self._user_message is not None:
             self._low_value_streak = 0
             self._idle_cycles = 0
-            return True, "user/work priority"
+            self._record_action("respond")
+            return True, "explicit owner message priority"
+        if pending_work:
+            self._low_value_streak = 0
+            self._idle_cycles = 0
+            self._record_action("research")
+            return True, "pending task priority"
+        if self._inbox_pending:
+            # Check every chunk before discarding anything. A bounded inspector
+            # must not silently drop the uninspected tail of a large batch.
+            batches = [inspect_batch(self._inbox_pending[i:i + 24])
+                       for i in range(0, len(self._inbox_pending), 24)]
+            batch = next((b for b in batches if b["high_value"]), batches[0])
+            if batch["action"] == "ignore":
+                self._loop_metrics["skipped_low"] += sum(b["count"] for b in batches)
+                self._record_action("ignore")
+                self._inbox_pending = []
+                return False, "low-value inbox batch inspected and skipped"
+            if config.get("decision_loop_enabled", False):
+                from drift.decisions import DecisionService
+                service = getattr(self, "_decision_service", None) or DecisionService(budget_root=self.env_path)
+                decision = service.decide({"scope": "loop", "importance": "high", "kind": batch["action"]},
+                    [{"id": "action", "type": "choice", "default": batch["action"],
+                      "options": ["research", "reflect", "plan", "respond", "sleep", "ignore"]}])
+                action = decision["answers"]["action"]["value"]
+                if action not in {"ignore", "sleep"}:
+                    batch["action"] = action
+            self._low_value_streak = 0
+            self._idle_cycles = 0
+            self._record_action(batch["action"])
+            return True, f"high-value inbox batch: {batch['action']}"
         sig = f"{self._user_message}|{len(self._inbox_pending)}|{pending_work}"
         val = input_value(self._user_message or "")
         if sig == self._last_input_sig and val == "low":
@@ -764,7 +856,9 @@ class Brain:
         hyst = int(config.get("idle_hysteresis_cycles", 3))
         if self._low_value_streak >= hyst:
             self._idle_cycles += 1
+            self._record_action("sleep")
             return False, f"idle/backoff (streak={self._low_value_streak})"
+        self._record_action("sleep")
         return True, "default proceed"
 
     async def _prepare_research(self, task):
@@ -781,6 +875,9 @@ class Brain:
             if url in kept:
                 continue
             result = await asyncio.to_thread(execute_tool, "fetch_url", {"url": url}, self.env_path)
+            store.record_step(session["id"], "researching", kind="tool", details={
+                "name": "fetch_url", "url": url,
+                "status": "error" if not isinstance(result, str) or result.startswith("Error") else "completed"})
             if isinstance(result, str) and result.strip() and not result.startswith("Error"):
                 store.add_source(session["id"], url, result)
         return store, store.get(session["id"])
@@ -891,8 +988,8 @@ class Brain:
         if self._user_message:
             input_list.insert(0, {
                 "role": "user",
-                "content": f'A voice from outside says: "{self._user_message}"\n'
-                           "You can respond with the respond tool, or keep working.",
+                "content": f'Explicit owner message (always address this request in your answer): "{self._user_message}"\n'
+                           "Respond directly before continuing any background work.",
             })
             self._user_message = None
 
@@ -986,6 +1083,10 @@ class Brain:
 
                 await self._broadcast({"event": "activity", "data": {"type": "idle", "detail": ""}})
                 await self._emit("tool_result", tool=tool_name, output=result)
+                if self._current_session_id:
+                    research_store.record_step(self._current_session_id, "researching", kind="tool", details={
+                        "name": tool_name, "call_id": call_id,
+                        "status": "error" if isinstance(result, str) and result.startswith("Error") else "completed"})
                 # Record successful fetch_url results against current task session.
                 if tool_name == "fetch_url" and research_store is not None \
                         and isinstance(result, str) and not result.startswith("Error"):
@@ -1113,10 +1214,12 @@ class Brain:
         ]
 
         try:
+            call_started = __import__("time").monotonic()
             reflect_response = await asyncio.to_thread(
                 chat, repack_context(reflect_input, 5000), False, REFLECTION_PROMPT,
                 budget_root=self.env_path
             )
+            self._record_model_call(reflect_response, call_started)
             await self._emit_api_call(
                 REFLECTION_PROMPT, reflect_input, reflect_response, is_reflection=True
             )
@@ -1178,10 +1281,12 @@ class Brain:
         ]
 
         try:
+            call_started = __import__("time").monotonic()
             plan_response = await asyncio.to_thread(
                 chat, repack_context(plan_input, 5000), False, PLANNING_PROMPT,
                 budget_root=self.env_path
             )
+            self._record_model_call(plan_response, call_started)
             await self._emit_api_call(
                 PLANNING_PROMPT, plan_input, plan_response, is_planning=True
             )
@@ -1292,11 +1397,13 @@ class Brain:
 
             # 5. Reflection (bounded)
             if self.stream.should_reflect():
+                self._record_action("reflect")
                 await self._reflect()
 
             # 6. Planning (bounded, periodic)
             self._cycles_since_plan += 1
             if self.thought_count and self._cycles_since_plan >= Brain.PLAN_INTERVAL:
+                self._record_action("plan")
                 await self._plan()
 
             # 7. Idle + broadcast state

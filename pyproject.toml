@@ -19,3 +19,6 @@ test = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 include = ["drift*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

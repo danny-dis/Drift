@@ -9,6 +9,19 @@ embeddings_enabled: false
 llm_scoring_enabled: false
 shell_enabled: false
 jev_enabled: false
+decision_models_enabled: false
+decision_remote_opt_in: false
+decision_local_only: false
+decision_max_state_chars: 6000
+decision_allowed_state_fields:
+  - text
+  - content
+  - kind
+  - scope
+  - importance
+  - timestamp
+  - candidates
+  - query
 decisions_llm_fallback: false
 thinking_pace_seconds: 10
 max_context_chars: 7000

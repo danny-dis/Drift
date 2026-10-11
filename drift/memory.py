@@ -53,8 +53,10 @@ def _lexical_importance(content: str) -> int:
 class MemoryStream:
     """Append-only memory stream with recency × importance × relevance retrieval."""
 
-    def __init__(self, environment_path: str):
-        self.path = os.path.join(environment_path, STREAM_FILENAME)
+    def __init__(self, root: str, *, decision_service=None):
+        self.path = os.path.join(root, STREAM_FILENAME)
+        from drift.decisions import DecisionService
+        self.decision_service = decision_service or DecisionService(budget_root=root)
         self.memories: list[dict] = []
         self.importance_sum: float = 0.0  # running sum since last reflection
         self._next_id: int = 0
@@ -90,11 +92,22 @@ class MemoryStream:
         references: list[str] | None = None,
     ) -> dict:
         """Score importance, compute embedding, append to stream."""
-        decision = decide_memory(content, state=json.dumps([m.get("content", "")[:400] for m in self.memories[-3:]]),
-                                 budget_root=os.path.dirname(self.path))
+        candidates = [{"id": m["id"], "content": m.get("content", "")[:400]} for m in self.memories[-5:]]
+        decision = decide_memory(content, state=json.dumps(candidates), service=self.decision_service,
+                                 candidates=candidates, budget_root=os.path.dirname(self.path))
         importance = decision["importance_display"]
-        if config.get("llm_scoring_enabled", False) and decision["provider"] != "jev":
+        if config.get("llm_scoring_enabled", False) and decision["provider"] == "lexical":
             importance = self._score_importance(content)
+        # Decision metadata is advisory; preserve the caller's explicit kind and
+        # append the source content regardless of provider availability.
+        decision.setdefault("decision_id", None)
+        decision.setdefault("schema_version", "1")
+        decision.setdefault("status", "fallback" if decision.get("fallback") else "ok")
+        decision.setdefault("usage", {})
+        decision.setdefault("novelty", "unassessed")
+        decision.setdefault("contradiction_candidates", [])
+        decision.setdefault("promotion_candidate", False)
+        decision.setdefault("reflection_candidate", False)
 
         # Compute embedding
         try:
@@ -176,6 +189,15 @@ class MemoryStream:
             scored.append((score, mem))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+        if config.get("decision_reranking_enabled", False) and scored:
+            candidates = scored[:20]
+            questions = [{"id": mem["id"], "type": "score", "min": 0, "max": 1,
+                          "default": _lexical_relevance(query, mem.get("content", ""))} for _, mem in candidates]
+            decision = self.decision_service.decide(
+                {"query": query, "candidates": [{"id": m["id"], "content": m["content"][:300]} for _, m in candidates]}, questions)
+            if decision["status"] == "ok":
+                candidates.sort(key=lambda pair: decision["answers"][pair[1]["id"]]["value"], reverse=True)
+                scored = candidates + scored[20:]
         return [mem for _, mem in scored[:top_k]]
 
     def should_reflect(self) -> bool:

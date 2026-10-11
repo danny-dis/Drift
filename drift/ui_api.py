@@ -193,18 +193,30 @@ async def list_research_sessions(request: Request):
 @router.post("/research/sessions")
 async def create_research_session(request: Request):
     """Create a research session + one bounded task carrying evidence URLs."""
-    from drift.research import ResearchStore
+    from drift.research import ResearchStore, _canonical_url
     brain = _get_brain(request)
-    body = await request.json()
-    query = str(body.get("query", "")).strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+    query = body.get("query", "")
+    if not isinstance(query, str) or not query.strip():
+        raise HTTPException(status_code=400, detail="query must be a nonempty string")
+    query = query.strip()
     if len(query) > 2000:
         raise HTTPException(status_code=400, detail="query too long")
-    urls = body.get("urls") or []
-    if not isinstance(urls, list):
-        raise HTTPException(status_code=400, detail="urls must be a list")
-    urls = [str(u)[:1024] for u in urls[:10]]
+    urls = body.get("urls", [])
+    if not isinstance(urls, list) or len(urls) > 10:
+        raise HTTPException(status_code=400, detail="urls must be a list of at most 10 URLs")
+    try:
+        for url in urls:
+            if not isinstance(url, str) or len(url) > 1024:
+                raise ValueError("URL must be a string of at most 1024 characters")
+            _canonical_url(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     project_id = body.get("project_id")
     if project_id is not None:
         project_id = str(project_id)
@@ -251,6 +263,55 @@ async def get_research_session(session_id: str, request: Request):
     if session is None:
         raise HTTPException(status_code=404, detail="research session not found")
     return {"session": session}
+
+
+@router.post("/research/sessions/{session_id}/resume")
+async def resume_research_session(session_id: str, request: Request):
+    """Owner-requested retry of the same bounded task, retaining its evidence."""
+    from drift.research import ResearchStore
+    brain = _get_brain(request)
+    store = ResearchStore(brain.env_path)
+    try:
+        session = store.get(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid research session id")
+    if session is None:
+        raise HTTPException(status_code=404, detail="research session not found")
+    recovering = session.get("state") == "researching" and session.get("repair_pending")
+    if session.get("state") != "needs_review" and not recovering:
+        raise HTTPException(status_code=409, detail="only needs_review or pending repair can resume")
+    repair_budget = int(config.get("research_max_repairs", 1))
+    if not recovering and int(session.get("owner_repair_attempts", 0)) >= repair_budget:
+        raise HTTPException(409, "Research repair budget exhausted")
+    task = brain.tasks.get_task(session.get("task_id", ""))
+    if task is None:
+        raise HTTPException(status_code=409, detail="original research task not found")
+    if task.status == "complete":
+        raise HTTPException(status_code=409, detail="completed task cannot resume")
+    try:
+        from drift.task import PHASES
+        changes = {"status": "pending", "blockers": []}
+        if task.phase == "blocked":
+            if task._prev_phase not in PHASES or task._prev_phase == "complete":
+                raise ValueError("original task has no valid resumable phase")
+            changes["phase"] = task._prev_phase
+        session = store.request_repair(session_id, max_attempts=repair_budget)
+        brain.tasks.update_task(task.id, **changes)
+        session = store.confirm_repair(session_id)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except OSError:
+        raise HTTPException(status_code=503, detail="retry persistence failed; retry the same session to recover")
+    return {"session_id": session_id, "task_id": task.id, "session": session}
+
+
+@router.get("/decisions")
+async def decision_telemetry(request: Request):
+    """Bounded aggregate diagnostics; no raw memory or provider request state."""
+    from drift.decisions import get_decision_summary
+    brain = _get_brain(request)
+    return {"loop": brain.decision_status(),
+            "memory": get_decision_summary(brain.env_path)}
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,12 @@
 {
   "name": "drift-frontend",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/build.mjs",
+    "test": "node --test scripts/build.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

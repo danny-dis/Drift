@@ -576,6 +576,6 @@ def restore_backup(backup_path: str, target: str) -> None:
     target_path.mkdir(parents=True, exist_ok=True)
 
     with tarfile.open(backup_path, "r:gz") as tar:
-        tar.extractall(target_path)
+        tar.extractall(target_path, filter="data")
 
     logger.info("Restored backup to: %s", target_path)

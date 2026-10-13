@@ -366,7 +366,8 @@ async def get_candidates(request: Request):
     """Get current attention candidates (for debugging)."""
     brain = _get_brain(request)
     if hasattr(brain, "attention"):
-        candidates = brain.attention.generate_candidates(brain)
+        from drift.attention import generate_candidates
+        candidates = generate_candidates(brain)
         return {
             "candidates": [
                 {
@@ -542,5 +543,17 @@ async def health_check(request: Request):
 @router.get("/usage")
 async def get_usage(request: Request):
     """Get model usage telemetry."""
-    from drift.capabilities import USAGE
-    return USAGE.summary()
+    from drift.usage import usage_status
+    return usage_status(_get_brain(request))
+
+
+@router.get("/setup")
+def read_setup(request: Request):
+    from drift.setup import setup_status
+    return setup_status(_get_brain(request))
+
+
+@router.post("/setup/check")
+async def check_setup_connection(request: Request):
+    from drift.setup import check_setup
+    return await check_setup(_get_brain(request))

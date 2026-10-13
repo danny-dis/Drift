@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,16 @@ from drift.capture_insights_api import router as insights_router
 
 logger = logging.getLogger("drift.server")
 
-app = FastAPI(title="Drift")
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    try:
+        await startup()
+        yield
+    finally:
+        await _shutdown()
+
+
+app = FastAPI(title="Drift", lifespan=_lifespan)
 brains: dict[str, Brain] = {}
 _tasks: set = set()  # tracked handles for graceful shutdown
 
@@ -65,12 +75,19 @@ async def _authorize_websocket(ws: WebSocket) -> bool:
     return True
 
 
-@app.on_event("shutdown")
+def _track_task(coroutine):
+    task = asyncio.create_task(coroutine)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return task
+
+
 async def _shutdown():
-    for t in list(_tasks):
+    pending = list(_tasks)
+    for t in pending:
         t.cancel()
-    if _tasks:
-        await asyncio.gather(*_tasks, return_exceptions=True)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     _tasks.clear()
 
 
@@ -225,9 +242,7 @@ async def create_crab(request: Request):
     brain = Brain(identity, box_path)
     brains[crab_id] = brain
     app.state.drift_brains = brains
-    t = asyncio.create_task(brain.run())
-    _tasks.add(t)
-    t.add_done_callback(_tasks.discard)
+    _track_task(brain.run())
     return {"ok": True, "id": crab_id, "name": name, "animal": animal}
 
 
@@ -327,12 +342,11 @@ async def get_file(request: Request, path: str):
         return {"path": path, "content": f"Error: {e}"}
 
 
-@app.on_event("startup")
 async def startup():
     async def _start_brains():
         await asyncio.sleep(0.5)
         for crab_id, brain in brains.items():
-            asyncio.create_task(brain.run())
+            _track_task(brain.run())
             logger.info(f"{brain.identity['name']} ({crab_id}) starting...")
 
-    asyncio.create_task(_start_brains())
+    _track_task(_start_brains())

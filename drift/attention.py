@@ -256,12 +256,17 @@ def generate_candidates(brain: Any) -> list[Candidate]:
 
     # 2. Unqualified ideas not already represented by a task
     tasks = brain.tasks.list_tasks(limit=100000)
+    referenced_ideas = {task.idea_id for task in tasks if task.idea_id}
+    attention_keys = {task.last_evidence.removeprefix("attention_dedup_key=")
+                      for task in tasks if task.last_evidence.startswith("attention_dedup_key=")}
     referenced_text = [
         " ".join(f"{task.goal} {task.objective}".casefold().split())
         for task in tasks
     ]
     for idea in brain.ledger.data.get("ideas", []):
         if idea.get("status", "captured") == "captured":
+            if idea.get("id") in referenced_ideas or f"idea:{idea.get('id', '')}" in attention_keys:
+                continue
             idea_text = " ".join(str(idea.get("text", "")).casefold().split())
             if idea_text and any(idea_text in text for text in referenced_text):
                 continue
@@ -310,8 +315,9 @@ def generate_candidates(brain: Any) -> list[Candidate]:
                 ))
 
     # 4. Inbox files (pending)
-    if brain._inbox_pending:
-        for f in brain._inbox_pending:
+    inbox_pending = getattr(brain, "_inbox_pending", [])
+    if inbox_pending:
+        for f in inbox_pending:
             dedup_key = f"inbox:{f.get('name', '')}"
             if dedup_key not in seen_dedup:
                 seen_dedup.add(dedup_key)

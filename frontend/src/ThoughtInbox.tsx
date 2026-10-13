@@ -9,10 +9,11 @@ type Props = {
   headers: () => Record<string, string>;
   onCaptured: () => void;
   organismId?: string;
+  refreshKey?: number;
 };
 const LIMIT = 20;
 
-function useCaptureHistory(headers: Props["headers"], organismId: string) {
+function useCaptureHistory(headers: Props["headers"], organismId: string, refreshKey: number) {
   const currentHeaders = useRef(headers);
   currentHeaders.current = headers;
   const [filter, setFilter] = useState({ q: "", offset: 0 });
@@ -53,7 +54,7 @@ function useCaptureHistory(headers: Props["headers"], organismId: string) {
     } finally {
       if (requestId === sequence.current) setLoading(false);
     }
-  }, [filter.q, filter.offset, organismId]);
+  }, [filter.q, filter.offset, organismId, refreshKey]);
 
   useEffect(() => {
     setPage(null);
@@ -74,9 +75,9 @@ function readableDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export default function ThoughtInbox({ headers, onCaptured, organismId = "default" }: Props) {
+export default function ThoughtInbox({ headers, onCaptured, organismId = "default", refreshKey = 0 }: Props) {
   const capture = useThoughtCapture(headers, organismId);
-  const history = useCaptureHistory(headers, organismId);
+  const history = useCaptureHistory(headers, organismId, refreshKey);
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const id = useId();
@@ -93,7 +94,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
     <section className="thought-inbox" aria-labelledby={`${id}-title`}>
       <header className="thought-heading">
         <h2 id={`${id}-title`}>Thought inbox</h2>
-        <p>Write it as it comes. Save now; Drift organizes it separately in the background.</p>
+        <p>Write it as it comes. Save now; optional AI processing happens separately when available.</p>
       </header>
       <form className="thought-composer" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label htmlFor={`${id}-draft`}>Capture a thought</label>
@@ -108,7 +109,9 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
           }} />
         <p id={`${id}-hint`} className="thought-muted">Ctrl/Cmd + Enter to save. You can keep typing while saving.</p>
         <p id={`${id}-local`} className="thought-muted" aria-live="polite">
-          {capture.locallySaved ? "Saved locally" : "Not saved locally — keep this page open until saved in Drift."}
+          {!capture.draft.text && !capture.pending ? "Ready for a thought. Nothing to save yet."
+            : capture.locallySaved ? "Saved locally — browser draft; use Save to add it to Drift."
+            : "Not saved locally — keep this page open until saved in Drift."}
         </p>
         {earlierPending && capture.pending && (
           <details className="thought-pending">
@@ -156,7 +159,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
         </div>
         {history.page && (
           <>
-            <p className="thought-muted">{history.page.total} saved thoughts{history.filter.q ? " matching this search" : ""}</p>
+            <p className="thought-muted">{history.page.total} saved {history.page.total === 1 ? "thought" : "thoughts"}{history.filter.q ? " matching this search" : ""}</p>
             <ul className="thought-list" aria-busy={history.loading}>
               {history.page.captures.map(item => (
                 <li key={item.id}>

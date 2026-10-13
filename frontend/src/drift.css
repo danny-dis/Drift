@@ -2,6 +2,9 @@
 
 /* PR1 lean control room (appended, existing styles preserved) */
 .auth-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;font-size:12px;color:#aeb6c4}
+.brand{display:inline;margin:0;line-height:1.3}
+.panel-title{margin:0;font-weight:600}
+.pad .project small{font-size:12px;color:#aeb6c4}
 .auth-row input{background:#080b10;border:1px solid #2a303d;border-radius:7px;color:#e7eaf0;padding:7px 10px}
 .auth-row button,.tab,.pad button{background:#161b25;border:1px solid #2a303d;color:#e7eaf0;border-radius:7px;padding:8px 12px;cursor:pointer}
 .tabs{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}
@@ -21,3 +24,38 @@
 blockquote{border-left:2px solid #2a303d;margin:6px 0;padding-left:8px;color:#aeb6c4;font-size:12px}
 pre{white-space:pre-wrap;word-break:break-word;font-size:11px;background:#080b10;padding:10px;border-radius:8px}
 footer{margin-top:14px;color:#7f8796;font-size:11px}
+
+/* Compact onboarding and keyboard navigation, matching the existing dark workspace. */
+.setup-guide,.connection-settings{margin:8px 0;border:1px solid #2a303d;border-radius:7px;background:#0d1017;color:#d8dee8;font-size:13px;overflow-wrap:anywhere}
+.setup-guide>summary,.connection-settings>summary{padding:10px 12px;cursor:pointer;min-height:44px}
+.setup-readiness{display:inline-block;margin-left:8px;color:#aeb6c4;font-size:12px}
+.setup-steps{margin:0;padding:0 16px 0 32px;line-height:1.5}
+.setup-steps li{padding:6px 0}
+.setup-steps button{margin:6px 8px 0 0;min-height:44px;padding:8px 12px;background:#161b25;border:1px solid #4c5863;border-radius:7px;color:#e7eaf0;font:inherit;cursor:pointer}
+.setup-steps small{display:block;color:#aeb6c4}
+.setup-steps button:disabled{opacity:.6;cursor:wait}
+.setup-boundaries{padding:0 12px 8px;color:#aeb6c4;line-height:1.5}
+.setup-boundaries code{overflow-wrap:anywhere}
+.connection-settings .auth-row{margin:0;padding:0 12px 12px}
+.connection-settings input{min-width:0;max-width:100%;min-height:44px}
+.connection-settings button,.tab{min-height:44px}
+.drift-shell :focus-visible{outline:3px solid #aedacb;outline-offset:3px}
+@media(max-width:600px){
+  .drift-shell{padding:10px}
+  .topbar{gap:8px;padding:4px 0 8px;align-items:flex-start}
+  .brand{font-size:18px}
+  .tagline{display:none}
+  .topbar .status{max-width:65%;line-height:1.4;overflow-wrap:anywhere}
+  .tabs{gap:4px;margin:8px 0}
+  .tab{padding:6px 10px;font-size:12px}
+  .setup-guide>summary,.connection-settings>summary{padding:8px;font-size:12px}
+  .setup-readiness{margin-left:0;display:block}
+  .drift-shell .thought-inbox{padding:12px}
+  .drift-shell .thought-heading{margin-bottom:8px}
+  .drift-shell .thought-heading h2{font-size:20px}
+  .drift-shell .thought-heading p,.drift-shell .thought-muted{font-size:13px}
+  .drift-shell .thought-composer{gap:4px}
+  .drift-shell .thought-composer textarea{min-height:6rem;height:8rem}
+  .drift-shell .thought-actions{margin-top:0;gap:8px}
+  .panel-title{padding:8px 12px}
+}

@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./drift.css";
 import ThoughtInbox from "./ThoughtInbox";
 import BudgetSummary from "./BudgetSummary";
 import ProjectIntelligence from "./ProjectIntelligence";
 import OfficePanel from "./OfficePanel";
+import { projectForNode } from "./project-navigation";
+import SetupGuide from "./SetupGuide";
+import type { SetupStatus } from "./SetupGuide";
+import SectionTabs from "./SectionTabs";
+import { createSessionTokenStore } from "./session-token";
+
+const sessionToken = createSessionTokenStore(() => sessionStorage);
 
 // Blast radius: imported only by main.tsx. No backend symbols touched.
 // Talks to backend only via /api/* fetch. No direct host access.
@@ -31,7 +38,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 function authHeaders(): Record<string, string> {
-  const t = sessionStorage.getItem("drift_token") || "";
+  const t = sessionToken.read();
   const h: Record<string, string> = { "Content-Type": "application/json" };
   if (t) h["Authorization"] = `Bearer ${t}`;
   return h;
@@ -43,7 +50,14 @@ function isHttp(url: string): boolean {
 
 export default function DriftApp() {
   const [tab, setTab] = useState<Tab>("inbox");
-  const [token, setToken] = useState(() => sessionStorage.getItem("drift_token") || "");
+  const [token, setToken] = useState(() => sessionToken.read());
+  const [tokenNote, setTokenNote] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
+  const [setupError, setSetupError] = useState("");
+  const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState("");
   const [statusLoading, setStatusLoading] = useState(true);
@@ -55,6 +69,7 @@ export default function DriftApp() {
   const [budget, setBudget] = useState<Record<string, unknown>>({});
   const [decisions, setDecisions] = useState<Decisions | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidatesUnavailable, setCandidatesUnavailable] = useState(false);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [receiptTotal, setReceiptTotal] = useState<number | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
@@ -65,6 +80,8 @@ export default function DriftApp() {
   const [sessionsNote, setSessionsNote] = useState("");
   const [selected, setSelected] = useState<{ kind: string; id: string; label: string; detail: string } | null>(null);
   const [projectDetail, setProjectDetail] = useState<{ events: { summary: string }[]; ideas: Idea[]; drift_md: string; intelligence?: Record<string, unknown> } | null>(null);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const projectSequence = useRef(0);
 
   // forms (inputs preserved on failed capture)
   const [ideaText, setIdeaText] = useState("");
@@ -76,12 +93,13 @@ export default function DriftApp() {
   const [sessUrls, setSessUrls] = useState("");
   const [sessProj, setSessProj] = useState("");
 
-  const saveToken = () => { sessionStorage.setItem("drift_token", token); setMsg("token saved locally (session only)"); };
-
   const loadStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/status", { headers: authHeaders() });
-      if (!res.ok) { setStatusErr(`status ${res.status}`); return; }
+      if (!res.ok) {
+        if (res.status === 401) { setAuthRequired(true); setSettingsOpen(true); }
+        setStatusErr(`status ${res.status}`); return;
+      }
       setStatus(await res.json()); setStatusErr("");
     } catch (e) { setStatusErr(String(e)); } finally { setStatusLoading(false); }
   }, []);
@@ -90,7 +108,10 @@ export default function DriftApp() {
     const get = async (url: string) => {
       try {
         const res = await fetch(url, { headers: authHeaders() });
-        if (!res.ok) return null; // do not pretend unavailable fields work
+        if (!res.ok) {
+          if (res.status === 401) { setAuthRequired(true); setSettingsOpen(true); }
+          return null; // do not pretend unavailable fields work
+        }
         return await res.json();
       } catch { return null; }
     };
@@ -108,14 +129,63 @@ export default function DriftApp() {
     if (rs) setFindings(rs.findings || []);
     if (ev) setEvidence(ev.evidence || []);
     if (bg) setBudget(bg);
+    setCandidatesUnavailable(!cd);
     if (cd) setCandidates(cd.candidates || []);
     if (rc) { setReceipts(rc.receipts || []); setReceiptTotal(rc.total_estimated_cost ?? null); }
     if (ap) setApprovals(ap.pending || []);
-    if (ss && ss.sessions) { setSessions(ss.sessions); setSessionsNote(""); }
+    if (ss && ss.sessions) {
+      setSessions(ss.sessions);
+      setSessionsNote(current => current === "Research sessions unavailable; check backend/authentication" ? "" : current);
+    }
     else setSessionsNote("Research sessions unavailable; check backend/authentication");
   }, []);
 
-  useEffect(() => { loadStatus(); loadAll(); }, [loadStatus, loadAll]);
+  const loadSetup = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ui/setup", { headers: authHeaders() });
+      if (!res.ok) {
+        setSetup(null);
+        if (res.status === 401) {
+          setAuthRequired(true); setSettingsOpen(true);
+          setSetupError("Drift requires its API session token. Open Connection settings; your draft is unchanged.");
+        } else setSetupError("Setup status unavailable. You can still write a draft and try saving.");
+        return;
+      }
+      setSetup(await res.json()); setSetupError(""); setAuthRequired(false);
+    } catch {
+      setSetup(null); setSetupError("Cannot reach Drift for setup status. Your draft is unchanged.");
+    }
+  }, []);
+
+  const checkConnection = async () => {
+    if (checking) return;
+    setChecking(true); setSetupError("");
+    try {
+      const res = await fetch("/api/ui/setup/check", { method: "POST", headers: authHeaders(), body: "{}" });
+      if (!res.ok) {
+        if (res.status === 401) {
+          setAuthRequired(true); setSettingsOpen(true);
+          setSetupError("Save your Drift API session token in Connection settings, then retry the check.");
+        } else setSetupError("AI check could not finish. Saving thoughts is separate; retry only when you choose.");
+        return;
+      }
+      setSetup(await res.json()); setAuthRequired(false);
+      await loadAll();
+    } catch { setSetupError("Cannot reach Drift for the AI check. Your draft is unchanged."); }
+    finally { setChecking(false); }
+  };
+
+  const saveToken = async () => {
+    try {
+      const persisted = sessionToken.write(token);
+      const note = persisted ? "Token saved for this browser session." : "Browser storage is blocked. The token applies only until this page reloads; saved thoughts are unaffected.";
+      setTokenNote(note); setMsg(note);
+      setHistoryRevision(value => value + 1);
+      await Promise.all([loadStatus(), loadAll(), loadSetup()]);
+    } catch { setErr("Connection status could not be refreshed. Your draft is unchanged."); }
+  };
+
+  useEffect(() => { loadStatus(); loadAll(); loadSetup(); }, [loadStatus, loadAll, loadSetup]);
   useEffect(() => { const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, [loadAll]);
   useEffect(() => { const t = setInterval(loadStatus, 10000); return () => clearInterval(t); }, [loadStatus]);
 
@@ -195,13 +265,17 @@ export default function DriftApp() {
   };
 
   const openProject = async (p: Project) => {
+    const sequence = ++projectSequence.current;
+    setProjectDetail(null); setProjectLoading(true);
     setSelected({ kind: "project", id: p.id, label: p.name, detail: `${p.repo}${p.local_path ? ` · ${p.local_path}` : ""}` });
     try {
       const res = await fetch(`/api/ui/projects/${p.id}`, { headers: authHeaders() });
-      if (!res.ok) { setProjectDetail(null); return; }
+      if (!res.ok) { if (sequence === projectSequence.current) setProjectDetail(null); return; }
       const d = await res.json();
+      if (sequence !== projectSequence.current) return;
       setProjectDetail({ events: d.events || [], ideas: d.ideas || [], drift_md: d.drift_md || "", intelligence: d.intelligence || undefined });
-    } catch { setProjectDetail(null); }
+    } catch { if (sequence === projectSequence.current) setProjectDetail(null); }
+    finally { if (sequence === projectSequence.current) setProjectLoading(false); }
   };
 
   const approve = async (id: string) => {
@@ -235,31 +309,37 @@ export default function DriftApp() {
   return (
     <main className="drift-shell">
       <header className="topbar">
-        <div><span className="brand">DRIFT</span><span className="tagline">local thinking workspace · bounded and evidence-linked</span></div>
+        <div><h1 className="brand">DRIFT</h1><span className="tagline">Save thoughts now. Make sense of them later.</span></div>
         <div className="status" aria-live="polite">
-          {statusLoading ? "loading status…" : statusErr ? `status error: ${statusErr}` : status ? `${status.state || "unknown"} · thoughts ${status.thought_count ?? "?"} · mem ${status.memory_count ?? "?"} · ${String(status.model || "")}` : "status unavailable"}
+          {statusLoading ? "Connecting to workspace…" : statusErr ? statusErr.includes("401") || statusErr.includes("403") ? "Drift API token required" : "Workspace unavailable" : status ? "Workspace connected" : "Workspace unavailable"}
         </div>
       </header>
 
-      <section className="auth-row" aria-label="API authentication">
-        <label htmlFor="drift-token">Auth token (optional, session only):</label>
-        <input id="drift-token" type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token" autoComplete="off" />
-        <button onClick={saveToken}>Save token</button>
-        <small>stored in sessionStorage, sent as Authorization header. Never enter provider secrets here.</small>
-      </section>
+      <SetupGuide setup={setup} error={setupError} checking={checking}
+        onCheck={() => { void checkConnection(); }} onSuggestions={() => setTab("inbox")} />
 
-      <nav className="tabs" role="tablist" aria-label="Drift sections">
-        {TABS.map(t => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "tab active" : "tab"} onClick={() => setTab(t.id)}>{t.label}</button>
-        ))}
-      </nav>
+      <details className="connection-settings" open={settingsOpen} onToggle={event => setSettingsOpen(event.currentTarget.open)}>
+        <summary>Connection settings{authRequired ? " — API token needed" : " (optional)"}</summary>
+        {authRequired && <p className="error" role="alert">Drift returned 401. Enter the Drift API session token, then save settings to reload status and history. Your draft stays here.</p>}
+        <section className="auth-row" aria-label="API authentication">
+        <label htmlFor="drift-token">Drift API token (this browser session):</label>
+        <input id="drift-token" type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Drift API session token" autoComplete="off" />
+        <button type="button" onClick={() => { void saveToken(); }}>Save token</button>
+        <small>{tokenNote || "Kept for this browser session and sent as an Authorization header. Never enter provider secrets here."}</small>
+        </section>
+      </details>
+
+      <SectionTabs tabs={TABS} selected={tab} onSelect={setTab} />
 
       {msg && <div className="hint" role="status">{msg}</div>}
       {err && <div className="error" role="alert">{err}</div>}
 
+      {TABS.filter(t => t.id !== tab).map(t => <section key={t.id} hidden role="tabpanel"
+        id={`drift-panel-${t.id}`} aria-labelledby={`drift-tab-${t.id}`} />)}
+
       {tab === "status" && (
-        <section role="tabpanel" aria-label="Status" className="panel">
-          <div className="panel-title">LIVE STATUS <span>{identity.name || "Drift"} {identity.animal ? `· ${identity.animal}` : ""}</span></div>
+        <section role="tabpanel" id="drift-panel-status" aria-labelledby="drift-tab-status" tabIndex={0} className="panel">
+          <h2 className="panel-title">LIVE STATUS <span>{identity.name || "Drift"} {identity.animal ? `· ${identity.animal}` : ""}</span></h2>
           <div className="pad">
             {statusLoading && <p>Loading live status…</p>}
             {statusErr && <p role="alert">Could not reach /api/status: {statusErr}. Backend may be down; no fields are faked.</p>}
@@ -268,19 +348,19 @@ export default function DriftApp() {
                 <li>state: {String(status.state ?? "unknown")}</li>
                 <li>thoughts: {String(status.thought_count ?? "n/a")}</li>
                 <li>memories: {String(status.memory_count ?? "n/a")}</li>
-                <li>model/route: {String(status.model ?? "n/a")} (free route; no paid inference from UI)</li>
+                <li>model/route: {String(status.model ?? "n/a")} (configured route; availability is separate from saving)</li>
                 <li>focus mode: {String(status.focus_mode ?? "n/a")}</li>
               </ul>
             )}
-            <p><small>Shell default disabled; registered paths only; local-only. Polls /api/status every 10s. Missing fields shown as n/a, never invented.</small></p>
+            <p><small>Shell default disabled; registered paths only. AI may use a remote gateway/provider. Polls /api/status every 10s without model calls. Missing fields shown as n/a, never invented.</small></p>
           </div>
         </section>
       )}
 
       {tab === "inbox" && (
-        <section role="tabpanel" aria-label="Inbox" className="panel">
-          <div className="panel-title">INBOX <span>{ideas.length} ideas</span></div>
-          <ThoughtInbox headers={authHeaders} onCaptured={() => { void loadAll(); }} />
+        <section role="tabpanel" id="drift-panel-inbox" aria-labelledby="drift-tab-inbox" tabIndex={0} className="panel">
+          <h2 className="panel-title">INBOX <span>Originals stay unchanged</span></h2>
+          <ThoughtInbox headers={authHeaders} refreshKey={historyRevision} onCaptured={() => { void loadAll(); }} />
           <details className="pad"><summary>Earlier ideas and project links</summary>
             <label htmlFor="idea-box">Capture an idea (input kept if capture fails):</label>
             <textarea id="idea-box" value={ideaText} onChange={e => setIdeaText(e.target.value)} placeholder="Half-formed is fine…" />
@@ -300,15 +380,15 @@ export default function DriftApp() {
       )}
 
       {tab === "office" && (
-        <section role="tabpanel" aria-label="Office">
+        <section role="tabpanel" id="drift-panel-office" aria-labelledby="drift-tab-office" tabIndex={0}>
           <OfficePanel state={String(status?.state ?? "unknown")} name={identity.name || "Drift"}
             connected={Boolean(status) && !statusErr} />
         </section>
       )}
 
       {tab === "projects" && (
-        <section role="tabpanel" aria-label="Projects" className="panel">
-          <div className="panel-title">PROJECT REGISTER + SHELF <span>{projects.length}</span></div>
+        <section role="tabpanel" id="drift-panel-projects" aria-labelledby="drift-tab-projects" tabIndex={0} className="panel">
+          <h2 className="panel-title">PROJECT REGISTER + SHELF <span>{projects.length}</span></h2>
           <div className="pad">
             <form onSubmit={e => { e.preventDefault(); registerProject(); }}>
               <label htmlFor="reg-name">Name</label>
@@ -318,7 +398,7 @@ export default function DriftApp() {
               <label htmlFor="reg-path">Local path (optional, must be registered)</label>
               <input id="reg-path" value={reg.local_path} onChange={e => setReg({ ...reg, local_path: e.target.value })} />
               <label htmlFor="reg-imp">Importance (0-1)</label>
-              <input id="reg-imp" value={reg.importance} onChange={e => setReg({ ...reg, importance: e.target.value })} inputMode="decimal" />
+              <input id="reg-imp" value={reg.importance} onChange={e => setReg({ ...reg, importance: e.target.value })} type="number" min="0" max="1" step="0.1" />
               <button className="primary" type="submit">Register project</button>
             </form>
             {regNote && <p role="status">{regNote}</p>}
@@ -333,7 +413,7 @@ export default function DriftApp() {
               <div tabIndex={0} aria-live="polite">
                 <h3>Selected project: {selected.label}</h3>
                 <p>{selected.detail}</p>
-                {projectDetail ? (
+                {projectLoading ? <p role="status">Loading project details…</p> : projectDetail ? (
                   <>
                     <p>Related ideas: {projectDetail.ideas.length} · events: {projectDetail.events.length}</p>
                     <ProjectIntelligence projectId={selected.id} value={projectDetail.intelligence} headers={authHeaders} publishAvailable={Boolean(projects.find(p => p.id === selected.id)?.local_path)} />
@@ -345,7 +425,11 @@ export default function DriftApp() {
             )}
             <div className="map" aria-label="Deterministic mind map">
               <div className="map-center">DRIFT</div>
-              {nodes.map((n, idx) => <button key={n.id} className={`node ${n.kind}`} style={pos(idx)} onClick={() => setSelected({ kind: n.kind, id: n.id, label: n.label, detail: n.kind === "project" ? "project node — open Projects detail above" : "idea node — see Inbox" })}>{n.label.slice(0, 42)}</button>)}
+              {nodes.map((n, idx) => <button key={n.id} className={`node ${n.kind}`} style={pos(idx)} onClick={() => {
+                const project = projectForNode(n.id, projects);
+                if (project) { void openProject(project); return; }
+                setSelected({ kind: n.kind, id: n.id.slice(2), label: n.label, detail: "idea node — see Inbox" });
+              }}>{n.label.slice(0, 42)}</button>)}
             </div>
             <p><small>Edges ({edges.length}, deterministic, no graph lib):</small></p>
             <ul>{edges.slice(0, 10).map((e, k) => <li key={k}><small>{e.source} —{e.relation}→ {e.target}</small></li>)}</ul>
@@ -354,8 +438,8 @@ export default function DriftApp() {
       )}
 
       {tab === "research" && (
-        <section role="tabpanel" aria-label="Research" className="panel">
-          <div className="panel-title">EVIDENCE + RESEARCH SESSIONS</div>
+        <section role="tabpanel" id="drift-panel-research" aria-labelledby="drift-tab-research" tabIndex={0} className="panel">
+          <h2 className="panel-title">EVIDENCE + RESEARCH SESSIONS</h2>
           <div className="pad">
             <h3>Findings ({findings.length})</h3>
             <ul>{findings.slice(-10).map((f, k) => <li key={k}>{f.summary} <small>· confidence {f.confidence ?? "unverified"}</small></li>)}</ul>
@@ -409,8 +493,8 @@ export default function DriftApp() {
       )}
 
       {tab === "attention" && (
-        <section role="tabpanel" aria-label="Attention and budget" className="panel">
-          <div className="panel-title">TASK / ATTENTION + BUDGET + RECEIPTS</div>
+        <section role="tabpanel" id="drift-panel-attention" aria-labelledby="drift-tab-attention" tabIndex={0} className="panel">
+          <h2 className="panel-title">TASK / ATTENTION + BUDGET + RECEIPTS</h2>
           <div className="pad">
             <h3>Tasks</h3>
             <ul>{tasks.map(t => <li key={t.id}>{t.goal} · {t.status} / {t.phase} {t.last_evidence && <button onClick={() => openTaskReport(t.id)}>Read report</button>}{t.blockers?.length ? <small> · {t.blockers.join("; ")}</small> : null}</li>)}</ul>
@@ -426,7 +510,8 @@ export default function DriftApp() {
               <BudgetSummary value={budget} />
             )}
             <h3>Attention candidates (why each task matters)</h3>
-            {candidates.length === 0 && <p><small>No candidates queued.</small></p>}
+            {candidatesUnavailable ? <p role="alert">Attention candidates unavailable; check backend/authentication. Previously loaded candidates may be stale.</p>
+              : candidates.length === 0 && <p><small>No candidates queued.</small></p>}
             <ul>
               {candidates.map((c, k) => (
                 <li key={k}><b>{c.source}</b> — {c.description} <small>· project {c.project_id || "none"} · priority {c.base_priority} · cost {c.estimated_cost}</small></li>
@@ -439,8 +524,8 @@ export default function DriftApp() {
       )}
 
       {tab === "approvals" && (
-        <section role="tabpanel" aria-label="Approvals" className="panel">
-          <div className="panel-title">BLOCKED TASK APPROVALS <span>{approvals.length} pending</span></div>
+        <section role="tabpanel" id="drift-panel-approvals" aria-labelledby="drift-tab-approvals" tabIndex={0} className="panel">
+          <h2 className="panel-title">BLOCKED TASK APPROVALS <span>{approvals.length} pending</span></h2>
           <div className="pad">
             {approvals.length === 0 && <p><small>Nothing blocked. Blocked tasks appear here for human approval.</small></p>}
             <ul>
@@ -456,7 +541,7 @@ export default function DriftApp() {
         </section>
       )}
 
-      <footer><small>Local-only UI. Backend owns data; UI never touches host files. Generated reports require owner review. Sources and model output are untrusted.</small></footer>
+      <footer><small>Backend owns saved data; browser drafts stay in local storage. AI may use remote providers. Generated reports require owner review. Sources and model output are untrusted.</small></footer>
     </main>
   );
 }

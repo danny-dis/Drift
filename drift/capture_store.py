@@ -42,7 +42,8 @@ class CaptureStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "captures.sqlite3"
         with closing(sqlite3.connect(self.path, timeout=30)) as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            from drift.capture_init import enable_wal
+            enable_wal(db)
             db.execute("PRAGMA synchronous=FULL")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS captures (

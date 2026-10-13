@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./drift.css";
+import ThoughtInbox from "./ThoughtInbox";
+import BudgetSummary from "./BudgetSummary";
+import ProjectIntelligence from "./ProjectIntelligence";
+import OfficePanel from "./OfficePanel";
 
 // Blast radius: imported only by main.tsx. No backend symbols touched.
 // Talks to backend only via /api/* fetch. No direct host access.
@@ -15,10 +19,11 @@ type Session = { id: string; query: string; state: string; phase?: string; next_
 type Decisions = { loop: Record<string, unknown>; memory: Record<string, unknown> };
 type Task = {id: string; goal: string; status: string; phase: string; last_evidence?: string; blockers?: string[]};
 
-type Tab = "status" | "inbox" | "projects" | "research" | "attention" | "approvals";
+type Tab = "status" | "inbox" | "office" | "projects" | "research" | "attention" | "approvals";
 const TABS: { id: Tab; label: string }[] = [
   { id: "status", label: "Status" },
   { id: "inbox", label: "Inbox" },
+  { id: "office", label: "Office" },
   { id: "projects", label: "Projects" },
   { id: "research", label: "Research" },
   { id: "attention", label: "Attention" },
@@ -37,7 +42,7 @@ function isHttp(url: string): boolean {
 }
 
 export default function DriftApp() {
-  const [tab, setTab] = useState<Tab>("status");
+  const [tab, setTab] = useState<Tab>("inbox");
   const [token, setToken] = useState(() => sessionStorage.getItem("drift_token") || "");
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState("");
@@ -59,7 +64,7 @@ export default function DriftApp() {
   const [taskReport, setTaskReport] = useState("");
   const [sessionsNote, setSessionsNote] = useState("");
   const [selected, setSelected] = useState<{ kind: string; id: string; label: string; detail: string } | null>(null);
-  const [projectDetail, setProjectDetail] = useState<{ events: { summary: string }[]; ideas: Idea[]; drift_md: string } | null>(null);
+  const [projectDetail, setProjectDetail] = useState<{ events: { summary: string }[]; ideas: Idea[]; drift_md: string; intelligence?: Record<string, unknown> } | null>(null);
 
   // forms (inputs preserved on failed capture)
   const [ideaText, setIdeaText] = useState("");
@@ -195,7 +200,7 @@ export default function DriftApp() {
       const res = await fetch(`/api/ui/projects/${p.id}`, { headers: authHeaders() });
       if (!res.ok) { setProjectDetail(null); return; }
       const d = await res.json();
-      setProjectDetail({ events: d.events || [], ideas: d.ideas || [], drift_md: d.drift_md || "" });
+      setProjectDetail({ events: d.events || [], ideas: d.ideas || [], drift_md: d.drift_md || "", intelligence: d.intelligence || undefined });
     } catch { setProjectDetail(null); }
   };
 
@@ -275,7 +280,8 @@ export default function DriftApp() {
       {tab === "inbox" && (
         <section role="tabpanel" aria-label="Inbox" className="panel">
           <div className="panel-title">INBOX <span>{ideas.length} ideas</span></div>
-          <div className="pad">
+          <ThoughtInbox headers={authHeaders} onCaptured={() => { void loadAll(); }} />
+          <details className="pad"><summary>Earlier ideas and project links</summary>
             <label htmlFor="idea-box">Capture an idea (input kept if capture fails):</label>
             <textarea id="idea-box" value={ideaText} onChange={e => setIdeaText(e.target.value)} placeholder="Half-formed is fine…" />
             <button className="primary" onClick={submitIdea}>+ Capture idea</button>
@@ -289,7 +295,14 @@ export default function DriftApp() {
               ))}
             </ul>
             {selected?.kind === "idea" && <p tabIndex={0} aria-live="polite"><b>Selected idea:</b> {selected.label} — {selected.detail}</p>}
-          </div>
+          </details>
+        </section>
+      )}
+
+      {tab === "office" && (
+        <section role="tabpanel" aria-label="Office">
+          <OfficePanel state={String(status?.state ?? "unknown")} name={identity.name || "Drift"}
+            connected={Boolean(status) && !statusErr} />
         </section>
       )}
 
@@ -323,6 +336,7 @@ export default function DriftApp() {
                 {projectDetail ? (
                   <>
                     <p>Related ideas: {projectDetail.ideas.length} · events: {projectDetail.events.length}</p>
+                    <ProjectIntelligence projectId={selected.id} value={projectDetail.intelligence} headers={authHeaders} publishAvailable={Boolean(projects.find(p => p.id === selected.id)?.local_path)} />
                     <ul>{projectDetail.ideas.slice(0, 5).map(i => <li key={i.id}>{i.text}</li>)}</ul>
                     {projectDetail.drift_md ? <pre>{projectDetail.drift_md.slice(0, 2000)}</pre> : <p><small>No drift.md summary available.</small></p>}
                   </>
@@ -409,7 +423,7 @@ export default function DriftApp() {
             </> : <p>Decision telemetry unavailable; check backend/authentication.</p>}
             <h3>Budget</h3>
             {Object.keys(budget).length === 0 ? <p><small>No budget data (backend unavailable).</small></p> : (
-              <ul>{Object.entries(budget).map(([k, v]) => <li key={k}>{k}: {String(v)}</li>)}</ul>
+              <BudgetSummary value={budget} />
             )}
             <h3>Attention candidates (why each task matters)</h3>
             {candidates.length === 0 && <p><small>No candidates queued.</small></p>}

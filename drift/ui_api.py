@@ -108,6 +108,7 @@ async def get_project(project_id: str, request: Request):
         "events": events[-20:],  # Last 20 events
         "ideas": ideas[-10:],
         "drift_md": drift_md,
+        "intelligence": project.get("intelligence"),
     }
 
 
@@ -356,12 +357,8 @@ async def list_evidence(request: Request):
 @router.get("/budget")
 async def get_budget(request: Request):
     """Get attention economy budget status."""
-    brain = _get_brain(request)
-    if hasattr(brain, "attention"):
-        status = brain.attention.get_status()
-    else:
-        status = {}
-    return status
+    from drift.runtime_status import budget_status
+    return budget_status(_get_brain(request))
 
 
 @router.get("/attention/candidates")

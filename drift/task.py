@@ -68,6 +68,12 @@ class Task:
     # Internal: remembers which phase a blocked task came from so it can resume.
     _prev_phase: str = "capture"
 
+    idea_id: str = ""
+    capture_id: str = ""
+    source_text: str = ""
+    part_index: int = 0
+    part_count: int = 1
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -135,11 +141,11 @@ class TaskStore:
             self._next_id = max_id + 1
         logger.info("Loaded %d tasks from %s", len(self._tasks), self.path)
 
-    def save(self) -> None:
+    def save(self, tasks: dict[str, Task] | None = None) -> None:
         """Atomic write: tmp + replace, same pattern as DriftLedger.save."""
         payload = {
             "schema": 1,
-            "tasks": [t.to_dict() for t in self._tasks.values()],
+            "tasks": [t.to_dict() for t in (self._tasks if tasks is None else tasks).values()],
         }
         data = json.dumps(payload, indent=2, ensure_ascii=False)
         fd, tmp_path = tempfile.mkstemp(
@@ -148,6 +154,8 @@ class TaskStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, self.path)
         except Exception:
             # Clean up the temp file if replace failed.
@@ -164,11 +172,16 @@ class TaskStore:
         project_id: str | None = None,
         priority: float = 0.5,
         estimated_cost: float = 0.0,
+        *,
+        idea_id: str = "",
+        capture_id: str = "",
+        source_text: str = "",
+        part_index: int = 0,
+        part_count: int = 1,
     ) -> Task:
         """Create a new task with a unique id and current timestamps."""
         with self._lock:
             task_id = f"task-{self._next_id:06d}"
-            self._next_id += 1
             now = datetime.now(timezone.utc).isoformat()
             task = Task(
                 id=task_id,
@@ -180,9 +193,15 @@ class TaskStore:
                 budget_remaining=estimated_cost,
                 created_at=now,
                 updated_at=now,
+                idea_id=idea_id,
+                capture_id=capture_id,
+                source_text=source_text,
+                part_index=part_index,
+                part_count=part_count,
             )
+            self.save({**self._tasks, task_id: task})
             self._tasks[task_id] = task
-            self.save()
+            self._next_id += 1
             logger.info("Created task %s: %s", task_id, goal[:60])
             return task
 
@@ -205,14 +224,16 @@ class TaskStore:
             # Track previous phase when entering blocked.
             if kwargs.get("phase") == "blocked":
                 kwargs["_prev_phase"] = task.phase
+            candidate = Task.from_dict(task.to_dict())
             for key, value in kwargs.items():
                 if key == "id":
                     continue  # never mutate identity
                 if not hasattr(task, key):
                     raise AttributeError(f"Task has no field {key!r}")
-                setattr(task, key, value)
-            task.updated_at = datetime.now(timezone.utc).isoformat()
-            self.save()
+                setattr(candidate, key, value)
+            candidate.updated_at = datetime.now(timezone.utc).isoformat()
+            self.save({**self._tasks, task_id: candidate})
+            task.__dict__.update(candidate.__dict__)
             return task
 
     def list_tasks(
@@ -252,9 +273,4 @@ class TaskStore:
 
     def reset_attempts(self, task_id: str) -> Task:
         """Reset attempt_count to 0. Used by retry logic after a backoff."""
-        with self._lock:
-            task = self._tasks[task_id]
-            task.attempt_count = 0
-            task.updated_at = datetime.now(timezone.utc).isoformat()
-            self.save()
-            return task
+        return self.update_task(task_id, attempt_count=0)

@@ -482,7 +482,8 @@ def fetch_url(url: str, max_chars: int = 12000, timeout: int = 15,
                     total += len(chunk)
                     if total >= max_bytes:
                         break
-                body = b"".join(chunks).decode("utf-8", errors="replace")
+                from drift.source_decode import decode_source
+                body = decode_source(b"".join(chunks), getattr(resp, "headers", {}), max_bytes)
                 break
             finally:
                 try:

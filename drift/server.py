@@ -18,6 +18,9 @@ from drift.config import config
 from drift.identity import _derive_traits
 from drift.organism_api import router as organism_router
 from drift.ui_api import router as ui_router
+from drift.capture_api import router as capture_router
+from drift.project_intelligence_api import router as intelligence_router
+from drift.capture_insights_api import router as insights_router
 
 logger = logging.getLogger("drift.server")
 
@@ -83,10 +86,14 @@ def create_app(all_brains: dict[str, Brain]) -> FastAPI:
         return app
     app.include_router(organism_router)
     app.include_router(ui_router)
+    app.include_router(capture_router)
+    app.include_router(intelligence_router)
+    app.include_router(insights_router)
     app.state.routes_installed = True
 
     # Register frontend catch-all LAST so it doesn't shadow API routes
-    frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+    from drift.runtime_resources import frontend_directory
+    frontend_dist = str(frontend_directory())
     if os.path.isdir(frontend_dist):
         app.mount(
             "/assets",
@@ -198,7 +205,8 @@ async def create_crab(request: Request):
     if crab_id in brains:
         return {"ok": False, "error": f"crab '{crab_id}' already exists"}
 
-    project_root = os.path.dirname(os.path.dirname(__file__))
+    from drift.runtime_resources import workspace_root
+    project_root = str(workspace_root())
     box_path = os.path.join(project_root, f"{crab_id}_box")
     os.makedirs(box_path, exist_ok=True)
     seed_bytes = hashlib.sha256(

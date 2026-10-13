@@ -1,5 +1,9 @@
 # Drift
 
+[![CI](https://github.com/danny-dis/Drift/actions/workflows/ci.yml/badge.svg)](https://github.com/danny-dis/Drift/actions/workflows/ci.yml)
+
+Version **0.2.0** — [release notes and wheel installation](docs/releases/0.2.0.md). The release wheel includes the dashboard; Node.js is only needed when building from source.
+
 A small, local-first thinking workspace: capture ideas, connect projects, research sources, review proposals, and retain useful context across restarts. Drift is not an autonomous coding factory.
 
 ## Run
@@ -24,6 +28,8 @@ The gateway is a separate service: Drift does not install, start or configure DM
 
 ## What the dashboard does
 
+- **Inbox:** save exact originals before AI processing, recover interrupted drafts and retries, search your history, and inspect separate advisory insights. No category is required. [Thought-capture behavior and limits](docs/thought-capture.md).
+- **Office:** a detailed high-DPI 2D isometric workspace reflecting runtime status. Animation is opt-in and respects reduced motion. [Office graphics](docs/office-scene.md).
 - **Capture:** stores the original idea immediately, with project connections. Work is queued separately; an API success does not mean model processing is finished.
 - **Projects:** register a repository and optional local path; inspect project intelligence and explicitly update its managed `drift.md` file.
 - **Research:** start a query with public source URLs and optional project association, inspect claims/citations, and review a persisted Markdown report. Sessions without valid evidence become `needs_review`, not verified.

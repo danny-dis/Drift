@@ -16,7 +16,9 @@ from drift.identity import load_identity_from, create_identity
 from drift.server import create_app
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+from drift.runtime_resources import workspace_root
+
+PROJECT_ROOT = str(workspace_root())
 
 
 def _organism_id_from_box(box_path: str) -> str:
@@ -48,6 +50,10 @@ def _discover_organisms() -> dict[str, Brain]:
     return brains
 
 
+def selected_organisms(explicit_box: str) -> dict[str, Brain]:
+    return {} if explicit_box else _discover_organisms()
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
@@ -57,7 +63,7 @@ if __name__ == "__main__":
     ap.add_argument("--name", default=os.environ.get("DRIFT_NAME", ""))
     args, _ = ap.parse_known_args()
 
-    brains = _discover_organisms()
+    brains = selected_organisms(args.box)
     # Non-interactive: explicit box/name or existing boxes; never mandate input.
     if args.box:
         os.makedirs(args.box, exist_ok=True)

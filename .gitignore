@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 node_modules/
 frontend/dist/
+drift/resources/
+build/
+dist/
+*.egg-info/
 drift.log.jsonl
 .DS_Store
 

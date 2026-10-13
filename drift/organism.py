@@ -127,6 +127,14 @@ class DriftLedger:
                     continue
         return f"idea-{best + 1:06d}"
 
+    def mutate(self, change):
+        """Apply one domain mutation against refreshed state atomically."""
+        with self._lock:
+            self._refresh_locked()
+            result = change(self.data)
+            self._persist_locked()
+            return result
+
     def save(self) -> None:
         with self._lock:
             payload = json.dumps(self.data, indent=2, ensure_ascii=False)

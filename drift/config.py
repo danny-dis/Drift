@@ -3,7 +3,9 @@
 import os
 import yaml
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+from drift.runtime_resources import config_path, workspace_root
+
+CONFIG_PATH = str(config_path())
 PROVIDER_PRESETS = {"openai": None, "openrouter": "https://openrouter.ai/api/v1"}
 PROVIDER_KEY_ENV_VARS = {"openrouter": "OPENROUTER_API_KEY"}
 
@@ -65,7 +67,7 @@ def load_config() -> dict:
     config.setdefault("attention_emergency_reserve", 0.10)
     config.setdefault("git_scan_cache_seconds", 300)
 
-    project_root = os.path.dirname(os.path.dirname(__file__))
+    project_root = str(workspace_root())
     if not os.path.isabs(config["environment_path"]):
         config["environment_path"] = os.path.join(project_root, config["environment_path"])
     if provider == "custom" and not config.get("base_url"):

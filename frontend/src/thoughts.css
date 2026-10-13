@@ -1,0 +1,124 @@
+.thought-inbox {
+  --thought-bg: #161a1e;
+  --thought-field: #101418;
+  --thought-text: #e4e9ed;
+  --thought-muted: #b0bbc5;
+  --thought-border: #4c5863;
+  --thought-accent: #aedacb;
+  --thought-error: #ffb6ac;
+  --thought-review: #f1d297;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 52rem;
+  margin-inline: auto;
+  padding: 1.25rem;
+  background: var(--thought-bg);
+  color: var(--thought-text);
+  font: inherit;
+  line-height: 1.5;
+  color-scheme: dark;
+  overflow-wrap: anywhere;
+}
+.thought-inbox *, .thought-inbox *::before, .thought-inbox *::after { box-sizing: border-box; }
+.thought-inbox h2, .thought-inbox h3, .thought-inbox h4 { margin: 0 0 .5rem; line-height: 1.3; }
+.thought-inbox h2 { font-size: 1.5rem; }
+.thought-inbox h3 { font-size: 1.125rem; }
+.thought-inbox h4 { font-size: 1rem; }
+.thought-inbox p { margin: .5rem 0; }
+.thought-heading { margin-bottom: 1.5rem; }
+.thought-heading p, .thought-muted { color: var(--thought-muted); }
+.thought-composer, .thought-search { display: grid; gap: .5rem; min-width: 0; }
+.thought-inbox label { font-weight: 600; }
+.thought-inbox textarea, .thought-inbox input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: .75rem;
+  border: 1px solid var(--thought-border);
+  border-radius: .25rem;
+  background: var(--thought-field);
+  color: var(--thought-text);
+  font: inherit;
+  line-height: 1.5;
+}
+.thought-inbox textarea { resize: vertical; min-height: 10rem; }
+.thought-inbox button {
+  min-height: 2.75rem;
+  padding: .5rem 1rem;
+  border: 1px solid var(--thought-accent);
+  border-radius: .25rem;
+  background: var(--thought-accent);
+  color: var(--thought-field);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.thought-inbox button.thought-secondary {
+  background: transparent;
+  border-color: var(--thought-border);
+  color: var(--thought-text);
+}
+.thought-inbox button:disabled { opacity: .55; cursor: not-allowed; }
+.thought-inbox button:not(:disabled):hover { border-color: var(--thought-text); }
+.thought-inbox :focus-visible { outline: 3px solid var(--thought-accent); outline-offset: 3px; }
+.thought-actions, .thought-history-heading, .thought-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.thought-actions { margin-top: .5rem; }
+.thought-history-heading { justify-content: space-between; margin-bottom: 1rem; }
+.thought-history-heading h3 { margin: 0; }
+.thought-feedback { min-width: 0; }
+.thought-error { color: var(--thought-error); }
+.thought-history { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--thought-border); }
+.thought-search { margin-bottom: 1rem; }
+.thought-search-controls { display: flex; gap: .5rem; min-width: 0; }
+.thought-search-controls button { flex-shrink: 0; white-space: nowrap; }
+.thought-list { margin: .75rem 0; padding: 0; list-style: none; }
+.thought-list > li { border-bottom: 1px solid var(--thought-border); }
+.thought-inbox summary { padding: .75rem .25rem; cursor: pointer; }
+.thought-summary-line { display: inline-flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline; }
+.thought-summary-line time { color: var(--thought-muted); font-size: .875rem; }
+.thought-status { font-size: .875rem; font-weight: 600; }
+.thought-needs-review { color: var(--thought-review); }
+.thought-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: pre-wrap;
+  margin-top: .5rem;
+}
+.thought-detail { padding: .25rem .25rem 1rem; min-width: 0; }
+.thought-detail h4 { margin-top: 1rem; }
+.thought-original {
+  max-height: 26rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font: inherit;
+  padding: .75rem;
+  margin: .5rem 0;
+  border: 1px solid var(--thought-border);
+  border-radius: .25rem;
+  background: var(--thought-field);
+  scrollbar-gutter: stable;
+}
+.thought-pending { border-top: 1px solid var(--thought-border); border-bottom: 1px solid var(--thought-border); }
+.thought-pagination { justify-content: space-between; margin-top: 1rem; }
+.thought-pagination span { color: var(--thought-muted); font-size: .875rem; }
+.thought-inbox code { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 380px) {
+  .thought-inbox { padding: .75rem; }
+  .thought-pagination { gap: .5rem; }
+  .thought-pagination button { padding-inline: .75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thought-inbox *, .thought-inbox *::before, .thought-inbox *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

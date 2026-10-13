@@ -46,19 +46,8 @@ def _lex_importance(text: str) -> int:
 
 
 def _redact(text: str) -> str:
-    text = re.sub(r'''(?i)((?:api[_ -]?key|token|password|secret)["']?\s*[:=]\s*["']?)[^\s,;"'}]+''',
-                  r"\1[REDACTED]", text)
-    patterns = (
-        r"(?i)\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}",
-        r"\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b",
-        r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
-        r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----",
-        # Conservatively remove unlabeled 40-character secret-key-shaped strings.
-        r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]{40}(?![A-Za-z0-9+/]))(?=[A-Za-z0-9+/]*[A-Za-z])(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{40}",
-    )
-    for pattern in patterns:
-        text = re.sub(pattern, "[REDACTED]", text)
-    return text
+    from drift.privacy import redact_text
+    return redact_text(text)
 
 
 def _safe_state(state: dict | str, settings: dict) -> dict | str:

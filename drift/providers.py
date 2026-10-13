@@ -411,7 +411,7 @@ def _normalize_completions_response(response) -> dict:
 
 
 def _client() -> openai.OpenAI:
-    return openai.OpenAI(api_key=config["api_key"], max_retries=0, timeout=float(config.get("model_timeout_seconds", 30)))
+    return openai.OpenAI(api_key=config["api_key"], max_retries=0, timeout=max(1.0, min(60.0, float(config.get("model_timeout_seconds", 60)))))
 
 
 def _uses_responses_api() -> bool:
@@ -426,7 +426,7 @@ def _completions_client() -> openai.OpenAI:
         # Ollama and similar local providers don't need a real key;
         # the SDK requires something, so use a placeholder
         api_key = "ollama"
-    kwargs = {"api_key": api_key, "max_retries": 0, "timeout": float(config.get("model_timeout_seconds", 30))}
+    kwargs = {"api_key": api_key, "max_retries": 0, "timeout": max(1.0, min(60.0, float(config.get("model_timeout_seconds", 60))))}
     if config.get("base_url"):
         kwargs["base_url"] = config["base_url"]
         # Local/cloud models (Ollama, etc.) can return transient 500s — retry more

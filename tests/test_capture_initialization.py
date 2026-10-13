@@ -53,3 +53,27 @@ def test_wal_lock_retry_is_bounded_and_other_database_errors_are_not_retried():
     with pytest.raises(sqlite3.OperationalError, match='malformed'):
         enable_wal(db, pause=pauses.append)
     assert db.calls == 1
+
+
+def test_no_retry_starts_after_deadline_and_pause_is_clamped():
+    from drift.capture_init import enable_wal
+    now = [0.0]
+    calls = []
+    timeouts = []
+    failure = sqlite3.OperationalError('database is locked')
+    class Database:
+        def execute(self, sql):
+            if sql.startswith('PRAGMA busy_timeout='):
+                timeouts.append(int(sql.split('=')[1]))
+                return
+            calls.append(now[0])
+            now[0] = 29.99
+            raise failure
+    def pause(seconds):
+        now[0] += seconds
+    with pytest.raises(sqlite3.OperationalError) as error:
+        enable_wal(Database(), pause=pause, clock=lambda: now[0])
+    assert error.value is failure
+    assert calls == [0.0]
+    assert timeouts == [30000]
+    assert now[0] <= 30.0

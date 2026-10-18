@@ -365,6 +365,18 @@ def _translate_multimodal(content_parts: list[dict]) -> list[dict]:
     return result
 
 
+def incomplete_response_reason(response: dict) -> str | None:
+    """Absent metadata supports older providers; explicit non-success never does."""
+    reason = response.get("finish_reason")
+    if reason and reason not in ("stop", "tool_calls", "function_call"):
+        return f"finish_reason={reason}"
+    status = response.get("status")
+    details = response.get("incomplete_details")
+    if (status and status != "completed") or details:
+        return f"status={status}; incomplete_details={details}"
+    return None
+
+
 def _normalize_completions_response(response) -> dict:
     """Normalize a Chat Completions response into the same format as _chat_responses.
 
@@ -372,11 +384,12 @@ def _normalize_completions_response(response) -> dict:
     that brain.py can safely append to input_list for follow-up calls.
     """
     message = response.choices[0].message
+    termination = {"finish_reason": getattr(response.choices[0], "finish_reason", None)}
     text = message.content
     tool_calls = []
     output = []
 
-    if message.tool_calls:
+    if message.tool_calls and not incomplete_response_reason(termination):
         for i, tc in enumerate(message.tool_calls):
             # Ollama may omit id; ensure we have one for tool_call_id in follow-up
             call_id = tc.id or f"call_{tc.function.name}_{i}"
@@ -407,7 +420,7 @@ def _normalize_completions_response(response) -> dict:
             }
         )
 
-    return {"text": text, "tool_calls": tool_calls, "output": output}
+    return {"text": text, "tool_calls": tool_calls, "output": output, **termination}
 
 
 def _client() -> openai.OpenAI:
@@ -471,6 +484,12 @@ def _chat_responses(
         response = client.responses.create(**kwargs)
 
     # Parse output items
+    details = getattr(response, "incomplete_details", None)
+    if hasattr(details, "model_dump"):
+        details = details.model_dump()
+    elif hasattr(details, "reason"):
+        details = {"reason": details.reason}
+    termination = {"status": getattr(response, "status", None), "incomplete_details": details}
     text_parts = []
     tool_calls = []
     for item in response.output:
@@ -478,7 +497,7 @@ def _chat_responses(
             for content in item.content:
                 if hasattr(content, "text"):
                     text_parts.append(content.text)
-        elif item.type == "function_call":
+        elif item.type == "function_call" and not incomplete_response_reason(termination):
             tool_calls.append(
                 {
                     "name": item.name,
@@ -493,6 +512,7 @@ def _chat_responses(
         "output": response.output,
         "usage": response.usage.model_dump() if response.usage else {},
         "model": response.model,
+        **termination,
     }
 
 

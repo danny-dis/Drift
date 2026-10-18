@@ -463,13 +463,22 @@ async def approve_task(task_id: str, request: Request):
     task = brain.tasks.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    # Unblock the task
+    from sqlite3 import Error as SQLiteError
+    from drift.outcomes import reconcile_capture_task
     from drift.task import can_transition
-    if task.status == "blocked" and can_transition(task, task._prev_phase):
-        brain.tasks.update_task(task.id, status="pending", phase=task._prev_phase,
-            attempt_count=0, blockers=[])
-        return {"ok": True, "task_id": task_id, "status": "pending"}
-    raise HTTPException(status_code=400, detail="Cannot approve this task")
+    recovering = task.status == "pending" and task.capture_id and task.phase == task._prev_phase
+    if ((task.status != "blocked" and not recovering)
+            or task._prev_phase in ("blocked", "complete")
+            or not can_transition(task, task._prev_phase)):
+        raise HTTPException(status_code=400, detail="Cannot approve this task")
+    try:
+        if task.status == "blocked":
+            brain.tasks.update_task(task.id, status="pending", phase=task._prev_phase,
+                attempt_count=0, blockers=[])
+        reconcile_capture_task(brain, task)
+    except (OSError, SQLiteError):
+        raise HTTPException(status_code=503, detail="Approval persistence failed; retry the same task to recover")
+    return {"ok": True, "task_id": task_id, "status": "pending"}
 
 
 # ---------------------------------------------------------------------------

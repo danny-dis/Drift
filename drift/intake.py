@@ -74,11 +74,8 @@ def stage_captures(brain, limit=8, max_tasks=20):
             created += 1
         if 0 in parts and not capture.get('task_id'):
             store.link(capture['id'], idea_id, parts[0].id)
-    # Reconcile domain checkpointing if a crash interrupted final association.
-    for capture_id, parts in incomplete.items():
-        if len(parts) == parts[0].part_count and all(t.status == 'complete' for t in parts):
-            capture = store.get(capture_id)
-            if capture and capture['status'] != 'processed' and capture.get('task_id'):
-                last = max(parts, key=lambda t: t.part_index)
-                store.finish(capture['task_id'], 'processed', last.last_evidence)
+    # Repair projections after interrupted completion or owner approval.
+    from drift.outcomes import reconcile_capture_task
+    for parts in incomplete.values():
+        reconcile_capture_task(brain, parts[0])
     return created

@@ -116,6 +116,29 @@ def finish_capture_task(brain, task):
         store.finish(capture['task_id'], 'processed', task.last_evidence)
 
 
+def reconcile_capture_task(brain, task) -> None:
+    """Project durable sibling task states; safe to repeat after interruption."""
+    capture_id = getattr(task, 'capture_id', '')
+    if not capture_id:
+        return
+    parts = [t for t in brain.tasks.list_tasks(limit=100000)
+             if getattr(t, 'capture_id', '') == capture_id]
+    if not parts:
+        return
+    from drift.capture_store import CaptureStore
+    store = CaptureStore(brain.env_path)
+    capture = store.get(capture_id)
+    if not capture or not capture.get('task_id'):
+        return
+    if len(parts) >= task.part_count and all(t.status == 'complete' for t in parts):
+        if capture['status'] != 'processed':
+            finish_capture_task(brain, max(parts, key=lambda t: t.part_index))
+        return
+    status = 'needs_review' if any(t.status == 'blocked' for t in parts) else 'queued'
+    if capture['status'] != status:
+        store.set_status(capture_id, status)
+
+
 def mark_capture_review(brain, task) -> None:
     if getattr(task, 'capture_id', ''):
         from drift.capture_store import CaptureStore

@@ -43,6 +43,8 @@ Saving is local to the machine running Drift. **AI processing may send thought c
 
 When an inference call fails, your original remains safe and work waits for explicit review. Restore the connection, inspect **Approvals**, and approve the same blocked task to retry. Model-call and context limits stay enforced. Tasks are not duplicated to bypass a block. Context that cannot safely retain a complete thought part is also stopped for review rather than silently losing its tail.
 
+Explicitly truncated or incomplete provider replies are retained as partial reports and stopped for review, not labeled processed. Approved captures return to queued only when no sibling part remains blocked; interrupted status updates are reconciled after restart. A fully retained answer resumes its finalization without another model call.
+
 ## Connection settings
 
 Usually no token is needed on your local installation. **Connection settings** stays collapsed until you open it or the server asks for authentication. If the owner configured `DRIFT_API_TOKEN`, enter that Drift API token and click **Save token**. Status and history refresh immediately; your draft is not cleared.
@@ -65,6 +67,12 @@ The field uses `sessionStorage` when available and sends an Authorization header
 **Shell execution is disabled unless explicitly enabled** with `shell_enabled: true`. Opting in is not an OS sandbox; use a container/VM for isolation. Generated files stay in the organism's box. Fetched pages, model output and repository contents are untrusted data, not permission to change files, enable tools or spend money.
 
 The backend binds to `127.0.0.1` by default. HTTP/WebSocket boundaries reject foreign browser origins; a CORS allowlist is not authentication. Public URL fetching refuses private/reserved addresses and URL credentials, validates redirects, pins the connected IP, and limits body size/time. Backup restoration rejects escaping paths and unsafe archive members.
+
+Registered-repository inspection disables executable Git helpers, including filesystem monitors, filters and external diff/text conversion. Project-document access refuses linked `drift.md` files; publishing atomically replaces a normal file and rejects unsafe or unavailable targets.
+
+Parent-repository status deliberately ignores dirtiness inside submodule worktrees, while still reporting changed submodule commit pointers. Register a submodule separately to inspect its worktree with its own sanitized configuration. Metadata inspection does not implicitly invoke signature verifiers.
+
+Existing unreadable or invalid `tasks.json` and `drift_ledger.json` checkpoints stop loading or mutation instead of being reset to empty. Back up the box and repair or restore a known-good checkpoint before retrying; do not delete damaged files merely to bypass the error. Disk-health warnings remain real: 90% or greater disk usage reports degraded health.
 
 Calls, output, context, tools, cycles and retries are bounded. External providers can have outages and rate limits. Optional remote decision adapters are disabled by default and are not necessary to use Drift. Long unattended usefulness and semantic accuracy cannot be guaranteed by a test suite.
 

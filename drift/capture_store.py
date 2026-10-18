@@ -171,6 +171,14 @@ class CaptureStore:
                 f"SELECT {_FIELDS} FROM captures WHERE id = ?", (capture_id,)
             ).fetchone())
 
+    def set_status(self, capture_id: str, status: str) -> None:
+        """Repair a task-derived status without replacing retained report metadata."""
+        _identifier(capture_id, "capture_id")
+        if status not in STATUSES:
+            raise ValueError("unknown capture status")
+        with self._db(write=True) as db:
+            db.execute("UPDATE captures SET status = ? WHERE id = ?", (status, capture_id))
+
     def finish(self, task_id: str, status: str, report_path: str = "", summary: str = "") -> int:
         """Record processing metadata for all linked captures; never change raw text."""
         _identifier(task_id, "task_id")

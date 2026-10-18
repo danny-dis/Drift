@@ -13,6 +13,8 @@ import logging
 import os
 import random
 from datetime import datetime, date
+from pathlib import Path
+from uuid import uuid4
 
 from drift.config import config
 from drift.context import (
@@ -31,7 +33,7 @@ from drift.prompts import (
     PLANNING_PROMPT,
     FOCUS_NUDGE,
 )
-from drift.providers import chat, chat_short
+from drift.providers import chat, chat_short, incomplete_response_reason
 from drift.receipt import ContextReceipt, ReceiptStore, to_dict
 from drift.task import Task, TaskStore
 from drift.tools import execute_tool, ensure_venv
@@ -48,6 +50,7 @@ LOG_PATH = os.path.join(workspace_root(), "drift.log.jsonl")
 
 # Deterministic idle gate: recurring empty/low-value input signature.
 _LOW_VALUE_RE = None  # compiled lazily
+_ANSWER_END = "\n<!-- drift-answer-complete -->\n"
 
 
 def input_value(text: str) -> str:
@@ -932,16 +935,43 @@ class Brain:
                 progress=PHASES.index(phase) / PHASES.index("complete"))
         self._seen_env_files = self._scan_env_files()
 
+    def _retained_answer(self, task, *, promote=True):
+        """Read only a fully written answer, including a rename interrupted by failure."""
+        path = Path(self.env_path) / "answers" / (task.id + ".md")
+        header = f"# {task.goal}\n\nStatus: unverified advisory answer; owner review required.\n\n"
+        for candidate in (path, Path(str(path) + ".tmp")):
+            if not candidate.resolve().is_relative_to(Path(self.env_path).resolve()):
+                raise ValueError("Answer artifact must remain inside the box")
+            try:
+                artifact = candidate.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            # Legacy final files were atomically renamed without the temporary-file seal.
+            sealed = artifact.endswith(_ANSWER_END)
+            if artifact.startswith(header) and (sealed or candidate == path and artifact.endswith("\n")):
+                text = artifact[len(header):-len(_ANSWER_END)] if sealed else artifact[len(header):-1]
+                if text.strip():
+                    if candidate != path and promote:
+                        os.replace(candidate, path)
+                    return text
+        return None
+
     async def _finish_answer(self, task, text):
         answer_dir = os.path.join(self.env_path, "answers")
         os.makedirs(answer_dir, exist_ok=True)
         path = os.path.join(answer_dir, task.id + ".md")
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
-            f.write(f"# {task.goal}\n\nStatus: unverified advisory answer; owner review required.\n\n{text[:12000]}\n")
-        os.replace(path + ".tmp", path)
-        if self.stream:
-            await asyncio.to_thread(self.stream.add, f"Completed answer {task.id}: {path}. "
-                "Proposal not applied; unverified.", "episode")
+        retained = self._retained_answer(task)
+        if retained is None:
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(f"# {task.goal}\n\nStatus: unverified advisory answer; owner review required.\n\n{text}{_ANSWER_END}")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(path + ".tmp", path)
+            if self.stream:
+                await asyncio.to_thread(self.stream.add, f"Completed answer {task.id}: {path}. "
+                    "Proposal not applied; unverified.", "episode")
+        else:
+            text = retained
         from drift.outcomes import record_answer, finish_capture_task
         record_answer(self, task, text, path)
         self._complete_report_task(task, path)
@@ -974,6 +1004,25 @@ class Brain:
                 last_evidence=path, blockers=result.get("errors") or ["Research needs owner review"])
             return
         self._complete_report_task(task, path)
+
+    def _block_incomplete_response(self, task, response):
+        reason = incomplete_response_reason(response)
+        if reason is None:
+            return False
+        answer_dir = Path(self.env_path) / "answers"
+        answer_dir.mkdir(parents=True, exist_ok=True)
+        path = answer_dir / f"{task.id}.partial-{task.attempt_count}-{uuid4().hex}.md"
+        with open(str(path) + ".tmp", "w", encoding="utf-8") as f:
+            f.write(f"# {task.goal}\n\nStatus: incomplete provider response; not a completed answer.\n"
+                    f"{reason}\n\n{response.get('text') or ''}\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(path) + ".tmp", path)
+        self.tasks.update_task(task.id, last_evidence=str(path))
+        from drift.outcomes import block_task
+        block_task(self, task, f"Incomplete provider response ({reason}); partial output retained. Review to retry.")
+        logger.warning("Task %s blocked: incomplete provider response (%s)", task.id, reason)
+        return True
 
     async def _think_once(self):
         """One bounded cognitive cycle: select task → build context → invoke → persist."""
@@ -1008,8 +1057,13 @@ class Brain:
             self.state = "idle"
             return
 
+        retained = self._retained_answer(task)
+        if retained is not None:
+            await self._finish_answer(task, retained)
+            self.state = "idle"
+            return
+
         if task.phase == "monitor" and task.next_action == "Report available for owner review; no source edits applied":
-            from pathlib import Path
             path = Path(task.last_evidence).resolve()
             if path.is_relative_to(Path(self.env_path).resolve()) and path.is_file():
                 self._complete_report_task(task, task.last_evidence)
@@ -1073,6 +1127,10 @@ class Brain:
         except Exception as error:
             from drift.outcomes import block_task
             block_task(self, task, f"Provider call failed ({type(error).__name__}); original input retained. Review to retry.")
+            self.state = "idle"
+            return
+
+        if self._block_incomplete_response(task, response):
             self.state = "idle"
             return
 
@@ -1200,6 +1258,9 @@ class Brain:
                 logger.error("LLM follow-up failed: %s", e)
                 from drift.outcomes import block_task
                 block_task(self, task, f"Provider follow-up failed ({type(e).__name__}); original input retained.")
+                self.state = "idle"
+                return
+            if self._block_incomplete_response(task, response):
                 self.state = "idle"
                 return
             await self._emit_api_call(instructions, input_list, response)
@@ -1465,10 +1526,18 @@ class Brain:
             except Exception as error:
                 logger.exception("Cognitive cycle failed; service remains available")
                 task = self.tasks.get_next_task()
+                message = "Cycle failed; owner review required"
                 if task is not None:
-                    self.tasks.update_task(task.id, phase="blocked", status="blocked",
-                        blockers=["Cycle failed; owner review required: " + str(error)[:180]])
-                await self._emit("cycle_error", text="Cycle failed; owner review required")
+                    try:
+                        retained = self._retained_answer(task, promote=False)
+                    except (OSError, ValueError):
+                        retained = None
+                    if retained is None:
+                        self.tasks.update_task(task.id, phase="blocked", status="blocked",
+                            blockers=["Cycle failed; owner review required: " + str(error)[:180]])
+                    else:
+                        message = "Finalization interrupted; retained answer will resume without another model call"
+                await self._emit("cycle_error", text=message)
 
             # 5. Reflection (bounded)
             if self.stream.should_reflect():

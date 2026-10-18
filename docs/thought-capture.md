@@ -28,6 +28,10 @@ The background worker converts saved captures into bounded 1,200-character proce
 
 A capture is marked processed only after all its expected parts have terminal completion checkpoints. An interruption between writing an outcome and writing the final task checkpoint can be resumed without asking the model again. Incomplete captures are reconciled after restart; save endpoints remain usable without a functioning model.
 
+Complete answer artifacts are retained before finalization and reused after interruptions in rename, memory/outcome recording or intermediate task phases. A fully written temporary answer can be promoted after an interrupted rename; unfinished temporary files are not accepted as complete answers. Recovery runs before model-call admission, including when the call allowance is exhausted.
+
+When the provider explicitly reports a token limit or another incomplete termination, Drift retains the partial text separately, prevents incomplete tool execution, and blocks the task for review. Approving the same task preserves its original and report metadata. The capture stays `needs_review` while any part remains blocked, otherwise returns to `queued`; restart reconciliation repairs an interrupted approval projection without another model call.
+
 Processing may wait when the model is unavailable or the configured daily/weekly call allowance is exhausted. The Attention page exposes actual call counts, remaining admission, wait reason and reset time separately from estimated money spent. Free inference still uses the call allowance.
 
 ## Ideas, projects and research

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-import subprocess
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +16,7 @@ from typing import Any
 
 from drift.organism import DriftLedger, git_diff_summary, git_snapshot
 from drift.task import TaskStore
+from drift.git_read import read_git as _run_git
 
 logger = logging.getLogger("drift.watcher")
 
@@ -224,21 +225,6 @@ class GitWatcher:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
-
-def _run_git(path: str, *args: str) -> str:
-    """Run a git command, return stdout. Raises on failure."""
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=Path(path),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return result.stdout.strip()
-    except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
-        return ""
-
 
 def _extract_components(changed_files: list[str]) -> list[str]:
     """Extract top-level directories from changed files."""

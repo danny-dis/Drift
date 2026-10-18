@@ -8,9 +8,9 @@ without carrying a perpetual transcript.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-import subprocess
 import tempfile
 import threading
 from dataclasses import asdict, dataclass, field
@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from drift.context import MemoryBlock, build_packet, decay_recency, keyword_relevance
+from drift.git_read import read_git
+from drift.project_document import read_document, write_document
+
+logger = logging.getLogger("drift.organism")
 
 
 @dataclass
@@ -73,13 +77,7 @@ class DriftLedger:
         self._load()
 
     def _load(self) -> None:
-        if self.path.exists():
-            try:
-                loaded = json.loads(self.path.read_text())
-                self.data.update(loaded)
-                self.data["schema"] = max(2, int(self.data.get("schema", 1)))
-            except (OSError, ValueError, TypeError):
-                pass
+        self._refresh_locked()
 
     def reload(self) -> None:
         """Re-read persisted state so a stale in-memory copy can't clobber others."""
@@ -88,16 +86,37 @@ class DriftLedger:
 
     def _refresh_locked(self) -> None:
         """Re-read file into memory. Caller must hold the lock."""
-        fresh: dict[str, Any] = {
+        self.data = self._read_checkpoint()
+
+    def _read_checkpoint(self) -> dict[str, Any]:
+        fresh = {
             "schema": 2, "ideas": [], "projects": [],
             "events": [], "mind_map": {"nodes": [], "edges": []},
         }
-        if self.path.exists():
-            try:
-                fresh.update(json.loads(self.path.read_text()))
-            except (OSError, ValueError, TypeError):
-                pass
-        self.data = fresh
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return fresh
+        except (OSError, ValueError):
+            logger.error("Ledger checkpoint unreadable; refusing to replace existing work")
+            raise
+        if not isinstance(loaded, dict) or type(loaded.get("schema")) is not int:
+            raise ValueError("Invalid ledger checkpoint; repair required")
+        if loaded["schema"] not in (1, 2):
+            raise ValueError("Unsupported ledger schema; repair required")
+        for key in ("ideas", "projects", "events"):
+            if not isinstance(loaded.get(key), list) or any(not isinstance(item, dict) for item in loaded[key]):
+                raise ValueError(f"Invalid ledger {key}; repair required")
+        graph = loaded.get("mind_map")
+        if not isinstance(graph, dict) or any(not isinstance(graph.get(key), list) for key in ("nodes", "edges")):
+            raise ValueError("Invalid ledger mind map; repair required")
+        for key, fields in (("nodes", ("id",)), ("edges", ("source", "target", "relation"))):
+            if any(not isinstance(item, dict) or any(not isinstance(item.get(field), str) for field in fields)
+                   for item in graph[key]):
+                raise ValueError(f"Invalid ledger {key} record; repair required")
+        fresh.update(loaded)
+        fresh["schema"] = 2
+        return fresh
 
     def _persist_locked(self) -> None:
         """Atomic tmp+replace write. Caller must hold the lock."""
@@ -137,20 +156,8 @@ class DriftLedger:
 
     def save(self) -> None:
         with self._lock:
-            payload = json.dumps(self.data, indent=2, ensure_ascii=False)
-            fd, tmp_path = tempfile.mkstemp(
-                prefix=".ledger-", suffix=".tmp", dir=str(self.root)
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(payload)
-                os.replace(tmp_path, self.path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            self._read_checkpoint()
+            self._persist_locked()
 
     def add_idea(self, text: str, concepts: list[str] | None = None) -> Idea:
         # Single critical section: refresh + mutate + persist so concurrent
@@ -271,17 +278,9 @@ def _slug(value: str) -> str:
 
 def git_snapshot(path: str) -> dict[str, Any]:
     """Read cheap deterministic Git facts. No model is needed for this step."""
-    root = Path(path)
-
-    def run(*args: str) -> str:
-        try:
-            return subprocess.check_output(["git", *args], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
-        except (OSError, subprocess.CalledProcessError):
-            return ""
-
-    status = run("status", "--porcelain")
-    commit = run("rev-parse", "HEAD")
-    branch = run("branch", "--show-current")
+    status = read_git(path, "status", "--porcelain")
+    commit = read_git(path, "rev-parse", "HEAD")
+    branch = read_git(path, "branch", "--show-current")
     return {
         "commit": commit,
         "branch": branch,
@@ -292,17 +291,9 @@ def git_snapshot(path: str) -> dict[str, Any]:
 
 def git_diff_summary(path: str, old_commit: str | None = None) -> dict[str, Any]:
     """Get bounded, deterministic change metadata before invoking a model."""
-    root = Path(path)
     base = old_commit or "HEAD~1"
-
-    def run(*args: str) -> str:
-        try:
-            return subprocess.check_output(["git", *args], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
-        except (OSError, subprocess.CalledProcessError):
-            return ""
-
-    stat = run("diff", "--stat", base, "HEAD")
-    names = run("diff", "--name-status", base, "HEAD")
+    stat = read_git(path, "diff", "--stat", base, "HEAD")
+    names = read_git(path, "diff", "--name-status", base, "HEAD")
     return {
         "base": base,
         "stat": stat[:4000],
@@ -312,10 +303,9 @@ def git_diff_summary(path: str, old_commit: str | None = None) -> dict[str, Any]
 
 
 def read_drift_md(path: str, limit: int = 6000) -> str:
-    target = Path(path) / "drift.md"
     try:
-        return target.read_text(errors="replace")[:limit]
-    except (OSError, UnicodeError):
+        return read_document(path, limit)
+    except (OSError, ValueError):
         return ""
 
 
@@ -329,8 +319,7 @@ def update_drift_md(
     Older updates are summarized away by replacing the managed sections. Raw
     evidence remains in the ledger, so compaction never destroys provenance.
     """
-    target = Path(path) / "drift.md"
-    existing = target.read_text(errors="replace") if target.exists() else ""
+    existing = read_document(path)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     questions = questions or []
     evidence = evidence or []
@@ -357,4 +346,4 @@ def update_drift_md(
     prefix = "# Drift Intelligence\n\n"
     if human:
         prefix += human + "\n\n"
-    target.write_text(prefix + managed.split("# Drift Intelligence\n\n", 1)[1])
+    write_document(path, prefix + managed.split("# Drift Intelligence\n\n", 1)[1])

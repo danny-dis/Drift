@@ -43,11 +43,14 @@ async def publish_intelligence(project_id: str, request: Request):
     intelligence = project.get('intelligence')
     if not root or not Path(root).is_dir() or not intelligence:
         raise HTTPException(409, 'registered local project and internal intelligence are required')
-    update_drift_md(root,
-        state='Unverified advisory intelligence; owner review required. ' + intelligence.get('summary', ''),
-        findings=intelligence.get('findings', []),
-        challenges=intelligence.get('challenges', []),
-        alternatives=intelligence.get('alternatives', []),
-        questions=intelligence.get('questions', []),
-        evidence=intelligence.get('report_paths', []))
+    try:
+        update_drift_md(root,
+            state='Unverified advisory intelligence; owner review required. ' + intelligence.get('summary', ''),
+            findings=intelligence.get('findings', []),
+            challenges=intelligence.get('challenges', []),
+            alternatives=intelligence.get('alternatives', []),
+            questions=intelligence.get('questions', []),
+            evidence=intelligence.get('report_paths', []))
+    except (OSError, ValueError):
+        raise HTTPException(409, 'Project document is unsafe or unavailable; inspect drift.md before retrying') from None
     return {'ok': True, 'path': str(Path(root) / 'drift.md'), 'verified': False}

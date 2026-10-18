@@ -93,7 +93,10 @@ async def write_project_intelligence(request: Request, project_id: str):
     if not project or not project.get("local_path"):
         raise HTTPException(status_code=404, detail="project or local_path not registered")
     body = await request.json()
-    update_drift_md(project["local_path"], state=str(body.get("state", "")), findings=list(body.get("findings") or []), challenges=list(body.get("challenges") or []), alternatives=list(body.get("alternatives") or []))
+    try:
+        update_drift_md(project["local_path"], state=str(body.get("state", "")), findings=list(body.get("findings") or []), challenges=list(body.get("challenges") or []), alternatives=list(body.get("alternatives") or []))
+    except (OSError, ValueError):
+        raise HTTPException(409, 'Project document is unsafe or unavailable; inspect drift.md before retrying') from None
     return {"ok": True, "path": f"{project['local_path']}/drift.md"}
 
 

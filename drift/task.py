@@ -126,19 +126,29 @@ class TaskStore:
         self._load()
 
     def _load(self) -> None:
-        if not self.path.exists():
-            return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            logger.error("Failed to load tasks.json: %s", e)
+        except FileNotFoundError:
             return
-        for item in raw.get("tasks", []):
+        except (OSError, ValueError):
+            logger.error("Task checkpoint unreadable; refusing to replace existing work")
+            raise
+        if not isinstance(raw, dict) or not isinstance(raw.get("tasks"), list):
+            raise ValueError("Invalid tasks.json checkpoint; repair required")
+        if type(raw.get("schema", 1)) is not int or raw.get("schema", 1) != 1:
+            raise ValueError("Unsupported tasks.json schema; repair required")
+        loaded = {}
+        for item in raw["tasks"]:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid task record; repair required")
             task = Task.from_dict(item)
-            self._tasks[task.id] = task
-        if self._tasks:
-            max_id = max(int(t.id.split("-")[1]) for t in self._tasks.values())
-            self._next_id = max_id + 1
+            if not isinstance(task.id, str) or not task.id.startswith("task-") or not task.id[5:].isdigit():
+                raise ValueError("Invalid task identity; repair required")
+            if task.id in loaded:
+                raise ValueError("Duplicate task identity; repair required")
+            loaded[task.id] = task
+        self._tasks = loaded
+        self._next_id = max((int(t.id[5:]) for t in loaded.values()), default=-1) + 1
         logger.info("Loaded %d tasks from %s", len(self._tasks), self.path)
 
     def save(self, tasks: dict[str, Task] | None = None) -> None:

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {build} from 'esbuild';
-const bundle=await build({entryPoints:[new URL('../src/office/character.ts',import.meta.url).pathname.slice(1)],bundle:true,write:false,format:'esm',platform:'node'});
+import {fileURLToPath} from 'node:url';
+const bundle=await build({entryPoints:[fileURLToPath(new URL('../src/office/character.ts',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node'});
 const {drawCharacter}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 function origin(activity){
   const translations=[];

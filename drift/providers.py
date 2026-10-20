@@ -135,19 +135,9 @@ def _bounded_tokens(requested: int | None) -> int:
 
 
 def _log_error_response(response: httpx.Response) -> None:
-    """Event hook: log 4xx/5xx response body immediately (before retries consume it)."""
+    """Retain HTTP status without private response bodies or credential URLs."""
     if response.status_code >= 400:
-        try:
-            response.read()
-            body = response.text[:1000] if response.text else "(empty)"
-        except Exception:
-            body = "(could not read)"
-        logger.error(
-            "Ollama/API HTTP %s: %s | url=%s",
-            response.status_code,
-            body,
-            str(response.url),
-        )
+        logger.error("Provider HTTP %s", response.status_code)
 
 
 TOOLS = [
@@ -566,13 +556,11 @@ def _chat_completions(
         kwargs["extra_body"] = body
         kwargs["extra_headers"] = headers
 
-    summary = _summarize_messages_for_log(messages)
     logger.info(
-        "chat_completions request: model=%s provider=%s msg_count=%d summary=%s",
+        "chat_completions request: model=%s provider=%s msg_count=%d",
         config["model"],
         config["provider"],
         len(messages),
-        json.dumps(summary, default=str),
     )
     try:
         with _completions_client() as client:
@@ -582,21 +570,7 @@ def _chat_completions(
         result["model"] = response.model
         return result
     except Exception as e:
-        body = ""
-        for attr in ("response", "http_response", "body"):
-            val = getattr(e, attr, None)
-            if val is not None:
-                if hasattr(val, "text"):
-                    body = (val.text or "")[:500]
-                    break
-                if isinstance(val, str):
-                    body = val[:500]
-                    break
-        logger.exception(
-            "chat_completions failed: %s | response_body=%s",
-            e,
-            body or "(none)",
-        )
+        logger.error("chat_completions failed (%s)", type(e).__name__)
         raise
 
 

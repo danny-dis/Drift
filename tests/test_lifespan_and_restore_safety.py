@@ -46,7 +46,11 @@ def test_lifespan_tracks_and_cancels_delayed_startup(monkeypatch, release_delay)
                 delay_cancelled.set()
                 raise
 
-        monkeypatch.setattr(server.asyncio, "sleep", controlled_sleep)
+        original_asyncio_sleep = asyncio.sleep
+        server_asyncio = __import__("types").SimpleNamespace(**vars(asyncio))
+        server_asyncio.sleep = controlled_sleep
+        monkeypatch.setattr(server, "asyncio", server_asyncio)
+        assert asyncio.sleep is original_asyncio_sleep
         initial = {FakeBrain("one"), FakeBrain("two")}
         monkeypatch.setattr(server, "brains", {b.identity["name"]: b for b in initial})
         monkeypatch.setattr(server, "_tasks", set())
@@ -80,7 +84,7 @@ def test_lifespan_tracks_and_cancels_delayed_startup(monkeypatch, release_delay)
                 task.cancel()
             await asyncio.gather(*leaked, return_exceptions=True)
 
-    asyncio.run(scenario())
+    asyncio.run(asyncio.wait_for(scenario(), 5))
 
 
 def test_lifespan_cancels_api_created_brain(monkeypatch, tmp_path):
@@ -96,7 +100,11 @@ def test_lifespan_cancels_api_created_brain(monkeypatch, tmp_path):
             finally:
                 delay_cancelled.set()
 
-        monkeypatch.setattr(server.asyncio, "sleep", controlled_sleep)
+        original_asyncio_sleep = asyncio.sleep
+        server_asyncio = __import__("types").SimpleNamespace(**vars(asyncio))
+        server_asyncio.sleep = controlled_sleep
+        monkeypatch.setattr(server, "asyncio", server_asyncio)
+        assert asyncio.sleep is original_asyncio_sleep
         monkeypatch.setattr(server, "brains", {})
         monkeypatch.setattr(server, "_tasks", set())
         monkeypatch.setattr(server, "Brain", lambda identity, box: brain)
@@ -109,7 +117,9 @@ def test_lifespan_cancels_api_created_brain(monkeypatch, tmp_path):
                 transport=httpx.ASGITransport(app=server.app),
                 base_url="http://127.0.0.1",
             ) as client:
-                response = await client.post("/api/crabs", json={"name": "created"})
+                response = await asyncio.wait_for(
+                    client.post("/api/crabs", json={"name": "created"}), 2
+                )
             assert response.status_code == 200
             assert response.json()["ok"] is True
             await asyncio.wait_for(brain.started.wait(), 1)
@@ -121,7 +131,7 @@ def test_lifespan_cancels_api_created_brain(monkeypatch, tmp_path):
         assert all(task.done() for task in owned)
         assert not server._tasks
 
-    asyncio.run(scenario())
+    asyncio.run(asyncio.wait_for(scenario(), 5))
 
 
 def test_create_app_remains_singleton_without_duplicate_routes(monkeypatch):

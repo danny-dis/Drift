@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./drift.css";
 import ThoughtInbox from "./ThoughtInbox";
+import ThoughtInsights from "./ThoughtInsights";
 import BudgetSummary from "./BudgetSummary";
 import ProjectIntelligence from "./ProjectIntelligence";
 import OfficePanel from "./OfficePanel";
+import { officeWork, type WorkActivity } from "./office/work-context";
 import { projectForNode } from "./project-navigation";
 import SetupGuide from "./SetupGuide";
 import type { SetupStatus } from "./SetupGuide";
@@ -17,24 +19,24 @@ const sessionToken = createSessionTokenStore(() => sessionStorage);
 
 type Idea = { id: string; text: string; status: string; concepts?: string[]; related_projects?: string[]; confidence?: number };
 type Project = { id: string; name: string; repo: string; local_path?: string; importance?: number; last_seen_commit?: string; last_round?: string };
-type Status = { state?: string; thought_count?: number; memory_count?: number; model?: string; name?: string; animal?: string; focus_mode?: boolean; [k: string]: unknown };
+type Status = { state?: string; activity?: WorkActivity; last_activity?: WorkActivity; thought_count?: number; memory_count?: number; model?: string; name?: string; animal?: string; focus_mode?: boolean; [k: string]: unknown };
 type EvidenceItem = { summary: string; evidence: { url?: string; title?: string; quote?: string }[]; confidence: number; source: string; timestamp: string };
 type Candidate = { source: string; description: string; project_id: string; base_priority: number; estimated_cost: number };
 type Receipt = { task_id: string; estimated_tokens: number; estimated_cost: number; model_provider: string; timestamp: string; context_budget?: number };
 type Approval = { id: string; goal: string; objective?: string; project_id?: string; blockers?: string[]; phase?: string };
 type Session = { id: string; query: string; state: string; phase?: string; next_action?: string; rev?: number; repairs?: number; project_id?: string; errors?: string[]; query_history?: unknown[]; notes?: unknown[]; tools?: unknown[]; scripts?: unknown[]; file_changes?: unknown[]; report_attempts?: unknown[]; repair_context?: unknown[]; sources?: {id: string; url: string; excerpt: string}[]; report?: {findings?: string[]; citations?: {source_id: string; quote?: string}[]} | null };
 type Decisions = { loop: Record<string, unknown>; memory: Record<string, unknown> };
-type Task = {id: string; goal: string; status: string; phase: string; last_evidence?: string; blockers?: string[]};
+type Task = {id: string; goal: string; status: string; phase: string; project_id?: string; last_evidence?: string; blockers?: string[]; source_text?: string; capture_id?: string};
 
 type Tab = "status" | "inbox" | "office" | "projects" | "research" | "attention" | "approvals";
 const TABS: { id: Tab; label: string }[] = [
-  { id: "status", label: "Status" },
   { id: "inbox", label: "Inbox" },
   { id: "office", label: "Office" },
   { id: "projects", label: "Projects" },
   { id: "research", label: "Research" },
-  { id: "attention", label: "Attention" },
-  { id: "approvals", label: "Approvals" },
+  { id: "attention", label: "Activity & budget" },
+  { id: "approvals", label: "Needs approval" },
+  { id: "status", label: "Workspace" },
 ];
 
 function authHeaders(): Record<string, string> {
@@ -77,6 +79,8 @@ export default function DriftApp() {
   const [sessionDetail, setSessionDetail] = useState<Session | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskReport, setTaskReport] = useState("");
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const reportRegion = useRef<HTMLElement>(null);
   const [sessionsNote, setSessionsNote] = useState("");
   const [selected, setSelected] = useState<{ kind: string; id: string; label: string; detail: string } | null>(null);
   const [projectDetail, setProjectDetail] = useState<{ events: { summary: string }[]; ideas: Idea[]; drift_md: string; intelligence?: Record<string, unknown> } | null>(null);
@@ -187,7 +191,19 @@ export default function DriftApp() {
 
   useEffect(() => { loadStatus(); loadAll(); loadSetup(); }, [loadStatus, loadAll, loadSetup]);
   useEffect(() => { const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, [loadAll]);
-  useEffect(() => { const t = setInterval(loadStatus, 10000); return () => clearInterval(t); }, [loadStatus]);
+  useEffect(() => {
+    const poll = () => {
+      if (document.hidden) return;
+      void loadStatus();
+      if (tab === 'office') fetch('/api/ui/tasks', { headers: authHeaders() }).then(async response => {
+        if (response.ok) { const data = await response.json(); if (Array.isArray(data.tasks)) setTasks(data.tasks); }
+      }).catch(() => {});
+    };
+    if (tab === 'office') poll();
+    const t = setInterval(poll, tab === 'office' ? 2000 : 10000);
+    return () => clearInterval(t);
+  }, [loadStatus, tab]);
+  useEffect(() => { if (activeTaskId) reportRegion.current?.focus(); }, [activeTaskId]);
 
   const submitIdea = async () => {
     if (!ideaText.trim()) return;
@@ -305,6 +321,9 @@ export default function DriftApp() {
     return e.slice(0, 32);
   }, [ideas, projects, nodes]);
   const pos = (idx: number) => ({ left: `${8 + ((idx * 37) % 84)}%`, top: `${12 + ((idx * 53) % 70)}%` });
+  const activeTask = tasks.find(task => task.id === activeTaskId);
+  const work = officeWork(String(status?.state || 'unknown'), status?.activity, status?.last_activity, tasks, projects, Date.now());
+  const savedTask = [...tasks].reverse().find(task => task.status === 'complete' && task.last_evidence);
 
   return (
     <main className="drift-shell">
@@ -339,27 +358,27 @@ export default function DriftApp() {
 
       {tab === "status" && (
         <section role="tabpanel" id="drift-panel-status" aria-labelledby="drift-tab-status" tabIndex={0} className="panel">
-          <h2 className="panel-title">LIVE STATUS <span>{identity.name || "Drift"} {identity.animal ? `· ${identity.animal}` : ""}</span></h2>
+          <h2 className="panel-title">Your workspace <span>{identity.name || "Drift"} · panda companion</span></h2>
           <div className="pad">
+            <p className="page-intro">Check your workspace connection here. Saving thoughts is separate from optional AI processing.</p>
+            <button className="primary" type="button" onClick={() => setTab("inbox")}>Write a thought</button>
             {statusLoading && <p>Loading live status…</p>}
             {statusErr && <p role="alert">Could not reach /api/status: {statusErr}. Backend may be down; no fields are faked.</p>}
             {status && (
               <ul>
-                <li>state: {String(status.state ?? "unknown")}</li>
-                <li>thoughts: {String(status.thought_count ?? "n/a")}</li>
-                <li>memories: {String(status.memory_count ?? "n/a")}</li>
-                <li>model/route: {String(status.model ?? "n/a")} (configured route; availability is separate from saving)</li>
-                <li>focus mode: {String(status.focus_mode ?? "n/a")}</li>
+                <li>Current activity: {String(status.state ?? "unknown")}</li>
+                <li>Thoughts processed since restart: {String(status.thought_count ?? "n/a")}</li>
+                <li>Saved memory items: {String(status.memory_count ?? "n/a")}</li>
+                <li><details><summary>Technical connection details</summary><p>Configured model/route: {String(status.model ?? "n/a")} (availability is separate from saving)</p><p>Focus mode: {String(status.focus_mode ?? "n/a")}</p></details></li>
               </ul>
             )}
-            <p><small>Shell default disabled; registered paths only. AI may use a remote gateway/provider. Polls /api/status every 10s without model calls. Missing fields shown as n/a, never invented.</small></p>
+            <p><small>Status refreshes every 10 seconds without calling AI. Unavailable fields are shown as n/a. AI may use a remote provider; see Getting started for configured access and privacy details.</small></p>
           </div>
         </section>
       )}
 
       {tab === "inbox" && (
         <section role="tabpanel" id="drift-panel-inbox" aria-labelledby="drift-tab-inbox" tabIndex={0} className="panel">
-          <h2 className="panel-title">INBOX <span>Originals stay unchanged</span></h2>
           <ThoughtInbox headers={authHeaders} refreshKey={historyRevision} onCaptured={() => { void loadAll(); }} />
           <details className="pad"><summary>Earlier ideas and project links</summary>
             <label htmlFor="idea-box">Capture an idea (input kept if capture fails):</label>
@@ -382,26 +401,34 @@ export default function DriftApp() {
       {tab === "office" && (
         <section role="tabpanel" id="drift-panel-office" aria-labelledby="drift-tab-office" tabIndex={0}>
           <OfficePanel state={String(status?.state ?? "unknown")} name={identity.name || "Drift"}
-            connected={Boolean(status) && !statusErr} />
+            connected={Boolean(status) && !statusErr} work={work} savedTask={savedTask} savedProject={projects.find(item => item.id === savedTask?.project_id)} headers={authHeaders}
+            onProject={id => { const project = projects.find(item => item.id === id); if (project) { void openProject(project); setTab('projects'); } }} />
         </section>
       )}
 
       {tab === "projects" && (
         <section role="tabpanel" id="drift-panel-projects" aria-labelledby="drift-tab-projects" tabIndex={0} className="panel">
-          <h2 className="panel-title">PROJECT REGISTER + SHELF <span>{projects.length}</span></h2>
+          <h2 className="panel-title">Your projects <span>{projects.length} registered</span></h2>
           <div className="pad">
+            <p className="page-intro">Keep related ideas and findings together. Add a project, then select it below to review its briefing.</p>
+            <h3>Add a project</h3>
             <form onSubmit={e => { e.preventDefault(); registerProject(); }}>
               <label htmlFor="reg-name">Name</label>
               <input id="reg-name" value={reg.name} onChange={e => setReg({ ...reg, name: e.target.value })} required />
-              <label htmlFor="reg-repo">Repo</label>
-              <input id="reg-repo" value={reg.repo} onChange={e => setReg({ ...reg, repo: e.target.value })} placeholder="org/repo" required />
-              <label htmlFor="reg-path">Local path (optional, must be registered)</label>
+              <details className="form-options"><summary>Optional project settings</summary>
+              <label htmlFor="reg-repo">Code repository (optional)</label>
+              <input id="reg-repo" value={reg.repo} onChange={e => setReg({ ...reg, repo: e.target.value })} placeholder="organization/repository" />
+              <label htmlFor="reg-path">Project folder on this machine (optional)</label>
               <input id="reg-path" value={reg.local_path} onChange={e => setReg({ ...reg, local_path: e.target.value })} />
-              <label htmlFor="reg-imp">Importance (0-1)</label>
+              <p className="helper">Use an existing folder allowed by this workspace. You can also keep a project here without linking a folder.</p>
+              <label htmlFor="reg-imp">Priority (0 = lowest, 1 = highest)</label>
               <input id="reg-imp" value={reg.importance} onChange={e => setReg({ ...reg, importance: e.target.value })} type="number" min="0" max="1" step="0.1" />
-              <button className="primary" type="submit">Register project</button>
+              </details>
+              <button className="primary" type="submit">Add project</button>
             </form>
             {regNote && <p role="status">{regNote}</p>}
+            <h3>Project shelf</h3>
+            {projects.length === 0 && <p className="empty-state">No projects to show yet. Use the form above to add one. If you expected projects here, check your workspace connection.</p>}
             <ul>
               {projects.map(p => (
                 <li key={p.id}>
@@ -418,11 +445,13 @@ export default function DriftApp() {
                     <p>Related ideas: {projectDetail.ideas.length} · events: {projectDetail.events.length}</p>
                     <ProjectIntelligence projectId={selected.id} value={projectDetail.intelligence} headers={authHeaders} publishAvailable={Boolean(projects.find(p => p.id === selected.id)?.local_path)} />
                     <ul>{projectDetail.ideas.slice(0, 5).map(i => <li key={i.id}>{i.text}</li>)}</ul>
-                    {projectDetail.drift_md ? <pre>{projectDetail.drift_md.slice(0, 2000)}</pre> : <p><small>No drift.md summary available.</small></p>}
+                    <details><summary>Saved drift.md summary</summary>{projectDetail.drift_md ? <pre>{projectDetail.drift_md.slice(0, 2000)}</pre> : <p><small>No drift.md summary available.</small></p>}</details>
                   </>
                 ) : <p><small>Detail unavailable (backend returned no detail).</small></p>}
               </div>
             )}
+            <details className="advanced-details"><summary>Project map & technical links</summary>
+            <p className="helper">An overview of saved links, not an AI recommendation. The project shelf above is the easiest way to open a project.</p>
             <div className="map" aria-label="Deterministic mind map">
               <div className="map-center">DRIFT</div>
               {nodes.map((n, idx) => <button key={n.id} className={`node ${n.kind}`} style={pos(idx)} onClick={() => {
@@ -433,17 +462,22 @@ export default function DriftApp() {
             </div>
             <p><small>Edges ({edges.length}, deterministic, no graph lib):</small></p>
             <ul>{edges.slice(0, 10).map((e, k) => <li key={k}><small>{e.source} —{e.relation}→ {e.target}</small></li>)}</ul>
+            </details>
           </div>
         </section>
       )}
 
       {tab === "research" && (
         <section role="tabpanel" id="drift-panel-research" aria-labelledby="drift-tab-research" tabIndex={0} className="panel">
-          <h2 className="panel-title">EVIDENCE + RESEARCH SESSIONS</h2>
+          <h2 className="panel-title">Research</h2>
           <div className="pad">
+            <p className="page-intro">Explore a question and review the sources behind the answer. AI findings are suggestions, not verified facts.</p>
+            <a className="next-step" href="#research-start">Start with a research question ↓</a>
+            <details className="advanced-details"><summary>Saved findings & source evidence ({findings.length} findings)</summary>
             <h3>Findings ({findings.length})</h3>
+            {findings.length === 0 && <p>No findings to show yet. Start a session below, or check the workspace connection if results are missing.</p>}
             <ul>{findings.slice(-10).map((f, k) => <li key={k}>{f.summary} <small>· confidence {f.confidence ?? "unverified"}</small></li>)}</ul>
-            <h3>Evidence with citations (rendered safely)</h3>
+            <h3>Sources & citations</h3>
             {evidence.length === 0 && <p><small>No evidence yet — uncertain/unverified until backend reports it.</small></p>}
             <ul>
               {evidence.slice(-10).map((e, k) => (
@@ -461,16 +495,23 @@ export default function DriftApp() {
                 </li>
               ))}
             </ul>
-            <h3>Research sessions {sessionsNote && <small>· {sessionsNote}</small>}</h3>
+            </details>
+            <h3 id="research-start">Start a research session</h3>
+            <p className="helper">Starting a session queues AI work and may use your model-call allowance. Review its report before acting.</p>
+            {sessionsNote && <p role="status">{sessionsNote}</p>}
             <form onSubmit={e => { e.preventDefault(); createSession(); }}>
-              <label htmlFor="sess-q">Query</label>
+              <label htmlFor="sess-q">What would you like to find out?</label>
               <input id="sess-q" value={sessQ} onChange={e => setSessQ(e.target.value)} required />
-              <label htmlFor="sess-urls">URLs (comma-separated, optional)</label>
+              <details className="form-options"><summary>Optional sources & project</summary>
+              <label htmlFor="sess-urls">Source links (comma-separated)</label>
               <input id="sess-urls" value={sessUrls} onChange={e => setSessUrls(e.target.value)} />
               <label htmlFor="sess-proj">Project id (optional)</label>
               <input id="sess-proj" value={sessProj} onChange={e => setSessProj(e.target.value)} />
-              <button className="primary" type="submit">Start session</button>
+              </details>
+              <button className="primary" type="submit">Start research</button>
             </form>
+            <h3>Your sessions</h3>
+            {sessions.length === 0 && <p className="empty-state">No sessions to show. Your question above is the starting point; connection errors will appear here if sessions cannot load.</p>}
             <ul>{sessions.map(s => <li key={s.id}><button onClick={() => openSession(s.id)}>{s.query} <small>({s.state || "unknown"})</small></button></li>)}</ul>
             {sessionDetail && <article aria-label="Research report">
               <h3>{sessionDetail.query}</h3>
@@ -494,22 +535,39 @@ export default function DriftApp() {
 
       {tab === "attention" && (
         <section role="tabpanel" id="drift-panel-attention" aria-labelledby="drift-tab-attention" tabIndex={0} className="panel">
-          <h2 className="panel-title">TASK / ATTENTION + BUDGET + RECEIPTS</h2>
+          <h2 className="panel-title">Activity & budget</h2>
           <div className="pad">
+            <p className="page-intro">See what Drift is working on and how much AI allowance remains. Saving thoughts does not require a model call.</p>
             <h3>Tasks</h3>
-            <ul>{tasks.map(t => <li key={t.id}>{t.goal} · {t.status} / {t.phase} {t.last_evidence && <button onClick={() => openTaskReport(t.id)}>Read report</button>}{t.blockers?.length ? <small> · {t.blockers.join("; ")}</small> : null}</li>)}</ul>
-            {taskReport && <pre>{taskReport}</pre>}
-            <h3>Decision telemetry</h3>
+            {tasks.length === 0 && <p className="empty-state">No tasks to show. You can keep saving thoughts in your inbox; if activity seems missing, check the workspace connection.</p>}
+            <button type="button" onClick={() => setTab("approvals")}>Review pending approvals</button>
+            <ul>{tasks.map(t => <li className="task-row" key={t.id}>
+              <p className="task-summary">{t.source_text || t.goal}</p>
+              <small>{t.status === "complete" ? "Suggestions ready for review" : t.status === "blocked" ? "Needs your review" : t.status}</small>{" "}
+              {t.last_evidence && <button aria-label={`View suggestions for ${(t.source_text || t.goal).slice(0, 60)}`} onClick={() => {
+                setActiveTaskId(t.id); setTaskReport("");
+                if (!t.capture_id) void openTaskReport(t.id);
+              }}>View suggestions</button>}
+              {t.blockers?.length ? <p className="helper">{t.blockers.join("; ")}</p> : null}
+            </li>)}</ul>
+            {activeTask && <section ref={reportRegion} tabIndex={-1} className="saved-suggestions" aria-label="Saved task suggestions">
+              <h3>Saved suggestions</h3>
+              {activeTask.capture_id ? <ThoughtInsights key={activeTask.capture_id} captureId={activeTask.capture_id} status={activeTask.status} headers={authHeaders} />
+                : taskReport ? <pre>{taskReport}</pre> : <p role="status">Loading saved report…</p>}
+            </section>}
+            <details className="advanced-details"><summary>Advanced: recorded decisions</summary>
             {decisions ? <>
               <p>Recorded loop and memory decisions; keyword gates are not semantic judgments. Unmeasured metrics remain unavailable.</p>
-              <details open><summary>Loop decisions</summary><pre>{JSON.stringify(decisions.loop, null, 2)}</pre></details>
+              <details><summary>Loop decisions</summary><pre>{JSON.stringify(decisions.loop, null, 2)}</pre></details>
               <details><summary>Memory decision summary (no raw memory)</summary><pre>{JSON.stringify(decisions.memory, null, 2)}</pre></details>
             </> : <p>Decision telemetry unavailable; check backend/authentication.</p>}
+            </details>
             <h3>Budget</h3>
             {Object.keys(budget).length === 0 ? <p><small>No budget data (backend unavailable).</small></p> : (
               <BudgetSummary value={budget} />
             )}
-            <h3>Attention candidates (why each task matters)</h3>
+            <details className="advanced-details"><summary>Proposed tasks & estimated usage</summary>
+            <h3>Proposed tasks (why each matters)</h3>
             {candidatesUnavailable ? <p role="alert">Attention candidates unavailable; check backend/authentication. Previously loaded candidates may be stale.</p>
               : candidates.length === 0 && <p><small>No candidates queued.</small></p>}
             <ul>
@@ -517,23 +575,26 @@ export default function DriftApp() {
                 <li key={k}><b>{c.source}</b> — {c.description} <small>· project {c.project_id || "none"} · priority {c.base_priority} · cost {c.estimated_cost}</small></li>
               ))}
             </ul>
-            <h3>Receipts {receiptTotal !== null && <small>· total {receiptTotal}</small>}</h3>
+            <h3>Usage estimates {receiptTotal !== null && <small>· total {receiptTotal}</small>}</h3>
+            <p className="helper">Recorded estimates are not billing receipts.</p>
             <ul>{receipts.slice(-10).map((r, k) => <li key={k}><small>{r.task_id} · {r.estimated_tokens} tok · {r.estimated_cost} · {r.model_provider} · {r.timestamp}</small></li>)}</ul>
+            </details>
           </div>
         </section>
       )}
 
       {tab === "approvals" && (
         <section role="tabpanel" id="drift-panel-approvals" aria-labelledby="drift-tab-approvals" tabIndex={0} className="panel">
-          <h2 className="panel-title">BLOCKED TASK APPROVALS <span>{approvals.length} pending</span></h2>
+          <h2 className="panel-title">Needs your approval <span>{approvals.length} pending</span></h2>
           <div className="pad">
-            {approvals.length === 0 && <p><small>Nothing blocked. Blocked tasks appear here for human approval.</small></p>}
+            <p className="page-intro">Read each task and its blockers before approving. Approval authorizes that task to continue.</p>
+            {approvals.length === 0 && <div className="empty-state"><p>No approvals to show. If the workspace is connected, there is nothing here to approve right now.</p><button type="button" onClick={() => setTab("inbox")}>Back to your inbox</button></div>}
             <ul>
               {approvals.map(a => (
                 <li key={a.id}>
                   <p><b>{a.goal}</b> <small>· {a.phase || "blocked"} · project {a.project_id || "none"}</small></p>
                   {(a.blockers || []).length > 0 && <p><small>Blockers: {(a.blockers || []).join("; ")}</small></p>}
-                  <button onClick={() => approve(a.id)}>Approve {a.id}</button>
+                  <button aria-label={`Approve task: ${a.goal}`} onClick={() => approve(a.id)}>Approve task</button>
                 </li>
               ))}
             </ul>

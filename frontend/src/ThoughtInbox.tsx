@@ -93,12 +93,12 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
   return (
     <section className="thought-inbox" aria-labelledby={`${id}-title`}>
       <header className="thought-heading">
-        <h2 id={`${id}-title`}>Thought inbox</h2>
-        <p>Write it as it comes. Save now; optional AI processing happens separately when available.</p>
+        <h2 id={`${id}-title`}>Your thought inbox</h2>
+        <p>A thought, a question, a loose end. Save it here without having to organize it first.</p>
       </header>
       <form className="thought-composer" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label htmlFor={`${id}-draft`}>Capture a thought</label>
-        <textarea id={`${id}-draft`} rows={7} value={capture.draft.text}
+        <textarea id={`${id}-draft`} rows={4} value={capture.draft.text} placeholder="What’s on your mind? Half-formed is fine."
           aria-describedby={`${id}-hint ${id}-local`}
           onChange={event => capture.setText(event.target.value)}
           onKeyDown={event => {
@@ -121,7 +121,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
           </details>
         )}
         <div className="thought-actions">
-          <button type="submit" disabled={capture.busy || !(capture.pending?.text ?? capture.draft.text).trim()}>Save</button>
+          <button type="submit" disabled={capture.busy || !(capture.pending?.text ?? capture.draft.text).trim()}>{capture.busy ? "Saving…" : "Save thought"}</button>
           <button type="button" className="thought-secondary"
             disabled={capture.busy || !!capture.pending || !capture.draft.text}
             onClick={capture.clearDraft}>Clear draft</button>
@@ -133,6 +133,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
       </form>
 
       <section className="thought-history" aria-labelledby={`${id}-history`}>
+        <p className="thought-muted">Your originals stay unchanged. Open a saved thought to review optional AI suggestions when available.</p>
         <div className="thought-history-heading">
           <h3 id={`${id}-history`}>Saved thoughts</h3>
           <button type="button" className="thought-secondary" disabled={history.loading}
@@ -154,7 +155,10 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
           {history.error && <p className="thought-error" role="alert">{history.error}</p>}
           {history.error && history.page && <p>Showing the last loaded results.</p>}
           {!history.loading && !history.error && history.page?.captures.length === 0 && (
-            <p>{history.filter.q ? "No saved thoughts match this search." : "No saved thoughts yet. Your first one can start above."}</p>
+            <div className="empty-state"><p>{history.filter.q ? "No saved thoughts match this search. Try a different word." : "Your inbox is ready. A sentence or two is enough to start."}</p>
+              {history.filter.q ? <button type="button" className="thought-secondary" onClick={() => { setSearch(""); history.setFilter({ q: "", offset: 0 }); }}>Show all thoughts</button>
+                : <button type="button" className="thought-secondary" onClick={() => document.getElementById(`${id}-draft`)?.focus()}>Write your first thought</button>}
+            </div>
           )}
         </div>
         {history.page && (

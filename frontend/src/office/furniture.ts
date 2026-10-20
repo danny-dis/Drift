@@ -1,4 +1,5 @@
 import { box, ellipse, iso, line, plane, polygon, rounded, shadow, type Context } from './geometry';
+import { DESK_SEAT, DESK_MOUSE } from './layout';
 
 export type SceneObject = { depth: number; draw: (c: Context) => void };
 const oak: [string, string, string] = ['#c7a17a', '#96704f', '#ae8660'];
@@ -24,7 +25,7 @@ function desk(c: Context) {
   // A desk mat, individual keycaps, mouse, notebook and ceramic cup.
   box(c, 6.25, 2.65, 1.65, .42, 2.21, .06, ['#d9d9c9', '#a4aa9a', '#bcc0b0']);
   for (let row = 0; row < 3; row++) for (let col = 0; col < 12; col++) plane(c, 6.32 + col * .126, 2.68 + row * .105, .09, .075, 2.276, '#f2f0e5');
-  const mouse = iso(8.17, 2.78, 2.24);
+  const mouse = iso(DESK_MOUSE.x, DESK_MOUSE.y, DESK_MOUSE.z - .04);
   ellipse(c, ...mouse, 6, 3.5, '#dddcd0', -.45);
   line(c, [mouse[0], mouse[1] - 2], [mouse[0] + 2, mouse[1]], '#a6ac9e', .7);
   box(c, 5.15, 2.1, .68, .87, 2.2, .06, ['#e8dcc0', '#b5a389', '#cec1a3']);
@@ -65,8 +66,8 @@ function shelf(c: Context) {
 }
 
 function chair(c: Context) {
-  const [x, y] = iso(7.4, 4.25);
-  shadow(c, 7.4, 4.25, 24, 10);
+  const [x, y] = iso(DESK_SEAT.x, DESK_SEAT.y);
+  shadow(c, DESK_SEAT.x, DESK_SEAT.y, 24, 10);
   for (let i = 0; i < 5; i++) {
     const angle = i * Math.PI * 2 / 5;
     const end: [number, number] = [x + Math.cos(angle) * 25, y + Math.sin(angle) * 10];

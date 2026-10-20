@@ -593,7 +593,8 @@ class ResearchStore:
         self.root = os.path.abspath(root)
         self._sessions = os.path.join(self.root, "sessions")
         self._reports = os.path.join(self.root, "research")
-        self._lock = _RESEARCH_LOCKS.setdefault(self.root, __import__("threading").RLock())
+        from drift.research_lock import ResearchMutex
+        self._lock = _RESEARCH_LOCKS.setdefault(self.root, ResearchMutex(self.root))
         os.makedirs(self._sessions, exist_ok=True)
         os.makedirs(self._reports, exist_ok=True)
 

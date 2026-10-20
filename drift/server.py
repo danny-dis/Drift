@@ -37,6 +37,9 @@ async def _lifespan(application: FastAPI):
 app = FastAPI(title="Drift", lifespan=_lifespan)
 brains: dict[str, Brain] = {}
 _tasks: set = set()  # tracked handles for graceful shutdown
+_brain_tasks: dict[str, asyncio.Task] = {}
+_task_failures: dict[str, dict] = {}
+_shutting_down = False
 
 
 def _origin_allowed(connection) -> bool:
@@ -75,14 +78,27 @@ async def _authorize_websocket(ws: WebSocket) -> bool:
     return True
 
 
-def _track_task(coroutine):
+def _track_task(coroutine, crab_id=None):
     task = asyncio.create_task(coroutine)
     _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    if crab_id is not None:
+        _brain_tasks[crab_id] = task
+
+    def finished(done):
+        _tasks.discard(done)
+        error = None if done.cancelled() else done.exception()
+        if error is not None:
+            failure = {"type": type(error).__name__, "at": time.time()}
+            _task_failures[crab_id if crab_id is not None else "startup"] = failure
+            logger.error("Runtime task ended (%s)", failure["type"])
+
+    task.add_done_callback(finished)
     return task
 
 
 async def _shutdown():
+    global _shutting_down
+    _shutting_down = True
     pending = list(_tasks)
     for t in pending:
         t.cancel()
@@ -207,6 +223,30 @@ async def get_crabs():
     ]
 
 
+@app.get("/api/runtime")
+async def get_runtime(request: Request):
+    """Task liveness, not inference availability; never expose exception text."""
+    import hmac
+    from fastapi.responses import JSONResponse
+    token = os.environ.get("DRIFT_API_TOKEN") or os.environ.get("DRIFT_RUNTIME_TOKEN")
+    if not token:
+        return JSONResponse({"healthy": False, "detail": "runtime authentication not configured"}, status_code=503)
+    if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    status = {}
+    for crab_id in brains:
+        task = _brain_tasks.get(crab_id)
+        state = "starting" if task is None else "running"
+        if task is not None and task.done():
+            state = "cancelled" if task.cancelled() else "failed" if task.exception() else "stopped"
+        status[crab_id] = {"state": state, "alive": state == "running",
+                           "error": _task_failures.get(crab_id)}
+    healthy = bool(status) and all(s["alive"] for s in status.values()) and not _shutting_down
+    return JSONResponse({"healthy": healthy, "shutting_down": _shutting_down,
+                         "brains": status, "startup_error": _task_failures.get("startup")},
+                        status_code=200 if healthy else 503)
+
+
 @app.post("/api/crabs")
 async def create_crab(request: Request):
     body = await request.json()
@@ -242,7 +282,7 @@ async def create_crab(request: Request):
     brain = Brain(identity, box_path)
     brains[crab_id] = brain
     app.state.drift_brains = brains
-    _track_task(brain.run())
+    _track_task(brain.run(), crab_id)
     return {"ok": True, "id": crab_id, "name": name, "animal": animal}
 
 
@@ -265,7 +305,9 @@ async def get_raw(request: Request, limit: int = 20):
 @app.get("/api/status")
 async def get_status(request: Request):
     brain = _get_brain(request)
+    from drift.work_activity import snapshot
     return {
+        **snapshot(brain),
         "state": brain.state,
         "thought_count": brain.thought_count,
         "importance_sum": brain.stream.importance_sum if brain.stream else 0,
@@ -343,10 +385,14 @@ async def get_file(request: Request, path: str):
 
 
 async def startup():
+    global _shutting_down
+    _shutting_down = False
+    _brain_tasks.clear()
+    _task_failures.clear()
     async def _start_brains():
         await asyncio.sleep(0.5)
         for crab_id, brain in brains.items():
-            _track_task(brain.run())
+            _track_task(brain.run(), crab_id)
             logger.info(f"{brain.identity['name']} ({crab_id}) starting...")
 
     _track_task(_start_brains())

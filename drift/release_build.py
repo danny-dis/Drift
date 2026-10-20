@@ -145,7 +145,7 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--smoke", type=Path, help="Install and verify this wheel in an isolated temporary venv")
     parser.add_argument("--assets", type=Path, help="Create frontend archive and checksums in this artifact directory")
-    parser.add_argument("--expect-version", default="0.2.1")
+    parser.add_argument("--expect-version", default="0.2.2")
     args = parser.parse_args()
     if args.smoke:
         smoke_wheel(args.smoke, args.expect_version)

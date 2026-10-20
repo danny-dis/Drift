@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/danny-dis/Drift/actions/workflows/ci.yml/badge.svg)](https://github.com/danny-dis/Drift/actions/workflows/ci.yml)
 
-Version **0.2.1** — [release notes](docs/releases/0.2.1.md).
+Version **0.2.2** — [release notes](docs/releases/0.2.2.md).
 
 A small thinking workspace on your computer. Write a messy thought, save it, and return to it later. Optional AI can suggest a summary, questions and project connections. Your original stays unchanged. Drift is not an autonomous coding factory.
 
@@ -11,7 +11,7 @@ A small thinking workspace on your computer. Write a messy thought, save it, and
 Install **Python 3.12 or 3.13** first. Check with `python --version`; on Windows, `py -3.12` can replace `python` in the commands below.
 
 ```bash
-python -m pip install "https://github.com/danny-dis/Drift/releases/download/v0.2.1/drift-0.2.1-py3-none-any.whl"
+python -m pip install "https://github.com/danny-dis/Drift/releases/download/v0.2.2/drift-0.2.2-py3-none-any.whl"
 python -m drift.main --box ./drift_box --name Drift
 ```
 
@@ -53,7 +53,7 @@ The field uses `sessionStorage` when available and sends an Authorization header
 
 ## Other sections
 
-- **Office:** an illustrative high-DPI 2D workspace reflecting backend activity, not evidence of invisible workers. Animation is opt-in and respects reduced motion. [Office graphics](docs/office-scene.md).
+- **Office:** an illustrative high-DPI 2D workspace reflecting backend activity, not evidence of invisible workers. Animation has a pause control and respects reduced motion. [Office graphics](docs/office-scene.md).
 - **Projects:** register a repository and optional local path; only registered repositories are inspected. Review advisory briefings and explicitly publish the managed `drift.md` section. Human content is preserved; Drift does not silently modify source code.
 - **Research:** give a query and optional public URLs. Inspect retained sources, citations and reports. Missing/invalid evidence becomes `needs_review`; citation integrity is not independent fact checking. Repair resumes the same task.
 - **Attention:** tasks, actual persisted call allowances, receipts and recorded decisions. Free calls still consume call allowance. Receipt cost fields are estimates unless a provider returns actual cost; a route name is not a billing receipt.

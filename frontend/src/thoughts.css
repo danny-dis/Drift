@@ -1,15 +1,15 @@
 .thought-inbox {
-  --thought-bg: #161a1e;
-  --thought-field: #101418;
-  --thought-text: #e4e9ed;
-  --thought-muted: #b0bbc5;
-  --thought-border: #4c5863;
-  --thought-accent: #aedacb;
+  --thought-bg: #17201d;
+  --thought-field: #101714;
+  --thought-text: #edf1ec;
+  --thought-muted: #b2beb6;
+  --thought-border: #52665a;
+  --thought-accent: #bad8bc;
   --thought-error: #ffb6ac;
   --thought-review: #f1d297;
   box-sizing: border-box;
   width: 100%;
-  max-width: 52rem;
+  max-width: 56rem;
   margin-inline: auto;
   padding: 1.25rem;
   background: var(--thought-bg);
@@ -41,7 +41,7 @@
   font: inherit;
   line-height: 1.5;
 }
-.thought-inbox textarea { resize: vertical; min-height: 10rem; }
+.thought-inbox textarea { resize: vertical; min-height: 7.5rem; }
 .thought-inbox button {
   min-height: 2.75rem;
   padding: .5rem 1rem;

@@ -59,3 +59,97 @@ footer{margin-top:14px;color:#7f8796;font-size:11px}
   .drift-shell .thought-actions{margin-top:0;gap:8px}
   .panel-title{padding:8px 12px}
 }
+
+/* Shared workbench chrome; page styles deliberately exclude the Office panel. */
+.drift-shell {
+  --work-bg: #101715;
+  --work-surface: #17201d;
+  --work-field: #101714;
+  --work-text: #edf1ec;
+  --work-muted: #b2beb6;
+  --work-border: #38483f;
+  --work-accent: #bad8bc;
+  max-width: 1240px;
+  padding: 24px 32px;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--work-text);
+  color-scheme: dark;
+}
+body { background: #101715; }
+.topbar { gap: 24px; padding: 0 0 20px; border-color: var(--work-border); }
+.brand { font-size: 24px; letter-spacing: .12em; font-weight: 750; }
+.tagline { display: block; margin: 4px 0 0; color: var(--work-muted); font-size: 14px; }
+.topbar .status { font-size: 13px; color: var(--work-muted); text-align: right; }
+.tabs { gap: 8px; margin: 20px 0; }
+.tabs .tab { min-height: 44px; font: inherit; font-size: 14px; padding: 8px 16px; background: transparent; border-color: var(--work-border); color: var(--work-muted); }
+.tabs .tab.active { background: var(--work-accent); border-color: var(--work-accent); color: var(--work-bg); font-weight: 700; }
+.tabs .tab:not(.active):hover { background: var(--work-surface); color: var(--work-text); }
+.setup-guide, .connection-settings { background: transparent; border-color: var(--work-border); font-size: 14px; margin: 12px 0; color: var(--work-text); }
+.setup-guide > summary, .connection-settings > summary { padding: 10px 16px; }
+.setup-readiness, .setup-steps small, .setup-boundaries { color: var(--work-muted); font-size: 13px; }
+.setup-steps { padding: 0 24px 12px 40px; max-width: 62rem; }
+.setup-steps li { padding-block: 8px; }
+.setup-steps button { font-size: 14px; }
+.setup-boundaries { padding: 0 16px 12px; }
+.setup-boundaries summary { padding: 8px 0; cursor: pointer; min-height: 44px; }
+.connection-settings .auth-row { gap: 12px; padding: 0 16px 16px; font-size: 14px; }
+.connection-settings input { flex: 1 1 200px; font: inherit; }
+.connection-settings small { flex-basis: 100%; color: var(--work-muted); }
+.drift-shell > .panel { background: var(--work-surface); border-color: var(--work-border); border-radius: 10px; box-shadow: none; overflow-wrap: anywhere; }
+.drift-shell > .panel .panel-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; padding: 24px 28px 16px; color: var(--work-text); font-size: 24px; line-height: 1.3; letter-spacing: -.02em; border-color: var(--work-border); }
+.drift-shell > .panel .panel-title span { float: none; font-size: 14px; font-weight: 400; letter-spacing: 0; color: var(--work-muted); }
+.drift-shell > .panel .pad { padding: 24px 28px; }
+.drift-shell > .panel .page-intro { color: var(--work-muted); max-width: 65ch; margin: 0 0 24px; }
+.drift-shell > .panel h3 { font-size: 18px; line-height: 1.4; margin: 28px 0 12px; }
+.drift-shell > .panel h4 { font-size: 16px; }
+.drift-shell > .panel .helper, .drift-shell > .panel small { color: var(--work-muted); font-size: 14px; }
+.drift-shell > .panel form { max-width: 44rem; margin-bottom: 24px; }
+.drift-shell > .panel label { font-size: 14px; font-weight: 600; color: var(--work-text); margin: 16px 0 6px; }
+.drift-shell > .panel input, .drift-shell > .panel textarea { min-width: 0; max-width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; color: var(--work-text); background: var(--work-field); border-color: var(--work-border); }
+.drift-shell > .panel button { min-height: 44px; max-width: 100%; font: inherit; font-size: 14px; border-color: var(--work-border); color: var(--work-text); }
+.drift-shell > .panel button.primary { width: auto; margin: 16px 0 0; padding: 10px 20px; background: var(--work-accent); border-color: var(--work-accent); color: var(--work-bg); font-weight: 700; }
+.drift-shell > .panel .pad li { font-size: 16px; margin: 12px 0; }
+.drift-shell > .panel .project { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 16px; background: var(--work-field); border-color: var(--work-border); }
+.drift-shell > .panel .project b { font-size: 16px; }
+.drift-shell > .panel .task-row { padding: 16px 0; border-bottom: 1px solid var(--work-border); }
+.drift-shell > .panel .task-summary { margin: 0 0 8px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.drift-shell > .panel .saved-suggestions { margin: 24px 0; padding: 16px; border: 1px solid var(--work-border); border-radius: 8px; }
+.drift-shell > .panel .project small { font-size: 14px; }
+.drift-shell > .panel summary { min-height: 44px; padding-block: 10px; cursor: pointer; color: var(--work-text); }
+.drift-shell > .panel .advanced-details { border-top: 1px solid var(--work-border); margin-top: 24px; padding-top: 8px; }
+.drift-shell > .panel .form-options { margin-top: 12px; }
+.drift-shell > .panel pre { font-size: 14px; line-height: 1.6; max-height: 28rem; overflow: auto; background: var(--work-field); border: 1px solid var(--work-border); }
+.drift-shell > .panel blockquote { font-size: 15px; color: var(--work-muted); padding-left: 16px; border-color: var(--work-border); }
+.drift-shell > .panel a { color: var(--work-accent); text-underline-offset: 4px; overflow-wrap: anywhere; }
+.drift-shell > .panel .next-step { display: inline-block; margin-bottom: 12px; }
+.drift-shell > .panel .empty-state { border-left: 3px solid var(--work-border); padding: 4px 0 4px 16px; color: var(--work-muted); margin-block: 16px; max-width: 65ch; }
+.drift-shell > .panel .map { overflow: hidden; }
+.drift-shell > .panel .map .node { font-size: 12px; }
+.drift-shell > .panel .thought-heading h2 { font-size: 28px; letter-spacing: -.025em; }
+.drift-shell > .panel .thought-heading p { font-size: 16px; }
+.drift-shell > .panel .thought-muted { font-size: 14px; }
+.drift-shell > .panel .thought-inbox { padding: 28px; }
+.drift-shell > .panel .thought-composer textarea { min-height: 7.5rem; height: auto; }
+.drift-shell > .panel .thought-inbox button { font-size: 15px; }
+.drift-shell > .panel .thought-composer button[type="submit"] { color: var(--work-bg); }
+.drift-shell > .panel .thought-inbox button.thought-secondary { color: var(--work-text); }
+.drift-shell > footer { margin-top: 20px; padding: 16px 0; color: var(--work-muted); text-align: left; font-size: 13px; max-width: 90ch; }
+.drift-shell > footer small { font-size: inherit; }
+.drift-shell > .hint, .drift-shell > .error { font-size: 14px; }
+@media (max-width: 600px) {
+  .drift-shell { padding: 16px 12px; }
+  .topbar { gap: 12px; align-items: flex-start; padding-bottom: 16px; }
+  .brand { font-size: 22px; }
+  .tagline { display: block; max-width: 23ch; font-size: 13px; }
+  .topbar .status { max-width: 40%; font-size: 12px; }
+  .tabs { gap: 6px; margin: 16px 0; }
+  .tabs .tab { padding: 8px 12px; font-size: 14px; }
+  .setup-guide > summary, .connection-settings > summary { font-size: 14px; padding: 10px 12px; }
+  .drift-shell > .panel .panel-title { padding: 20px 16px 16px; font-size: 22px; }
+  .drift-shell > .panel .pad, .drift-shell > .panel .thought-inbox { padding: 20px 16px; }
+  .drift-shell > .panel .thought-heading h2 { font-size: 24px; }
+  .drift-shell > .panel .thought-heading { margin-bottom: 20px; }
+  .drift-shell > .panel .thought-composer { gap: 8px; }
+  .drift-shell > .panel .thought-composer textarea { min-height: 7.5rem; height: auto; }
+}

@@ -9,7 +9,7 @@ export default function ThoughtInsights({ captureId, status, headers }: Props) {
   const [report, setReport] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    setError("");
+    setError(""); setValue(null); setReport("");
     fetch(`/api/ui/captures/${encodeURIComponent(captureId)}/insights`, { headers: headers(), signal: controller.signal })
       .then(async response => {
         if (!response.ok) throw new Error("Insights are unavailable; your saved original is unchanged.");
@@ -30,6 +30,7 @@ export default function ThoughtInsights({ captureId, status, headers }: Props) {
   return <section aria-label="Thought insights">
     <h4>What Drift made of this</h4>
     <p>These are unverified suggestions, not replacements for your original.</p>
+    {!value && !error && <p role="status">Loading saved suggestions…</p>}
     {error && <p role="alert">{error}</p>}
     {value && <>
       <p>{value.progress.total ? `${value.progress.complete} of ${value.progress.total} parts processed` : "Saved; processing has not started."}</p>

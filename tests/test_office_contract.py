@@ -40,5 +40,6 @@ def test_office_animation_is_optional_and_pauses_when_unobserved():
 def test_office_does_not_fabricate_workers_or_fetch_private_data():
     panel = (FRONTEND / 'OfficePanel.tsx').read_text(encoding='utf-8')
     assert 'fetch(' not in panel
-    assert 'Backend status unavailable' in panel
-    assert 'illustrative' in panel
+    assert 'Waiting for the workspace to reconnect' in panel
+    assert 'not a progress meter' in panel
+    assert 'never a pretend project' in panel

@@ -41,6 +41,7 @@ from drift.watcher import GitWatcher
 from drift.attention import AttentionEconomy, generate_candidates, select_best_candidate, BudgetTracker
 from drift.providers import CallBudget
 from drift.loop_decisions import inspect_batch
+from drift.work_activity import observe, record as record_activity
 
 logger = logging.getLogger("drift.brain")
 
@@ -739,8 +740,9 @@ class Brain:
                     raise RuntimeError("task model-call limit reached")
                 self.tasks.update_task(task.id, attempt_count=current.attempt_count + 1)
             try:
-                response = await asyncio.to_thread(chat, input_list, tools, instructions,
-                    config.get("max_output_tokens", 1000), budget_root=self.env_path)
+                with observe(self, "thinking", task):
+                    response = await asyncio.to_thread(chat, input_list, tools, instructions,
+                        config.get("max_output_tokens", 1000), budget_root=self.env_path)
                 break
             except (openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError) as error:
                 if attempt + 1 >= attempts or not CallBudget(self.env_path).can_call():
@@ -967,6 +969,7 @@ class Brain:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(path + ".tmp", path)
+            record_activity(self, "writing", task, path)
             if self.stream:
                 await asyncio.to_thread(self.stream.add, f"Completed answer {task.id}: {path}. "
                     "Proposal not applied; unverified.", "episode")
@@ -990,6 +993,7 @@ class Brain:
         with open(path + ".tmp", "w", encoding="utf-8") as f:
             f.write(store.export_markdown(session["id"]))
         os.replace(path + ".tmp", path)
+        record_activity(self, "writing", task, path)
         if self.stream:
             await asyncio.to_thread(self.stream.add,
                 f"Research task {task.id}: {result['state']}. Report: answers/{task.id}.md; "
@@ -1086,7 +1090,8 @@ class Brain:
         # 2. Build bounded context
         capture_task = bool(getattr(task, "capture_id", "") or getattr(task, "source_text", ""))
         try:
-            instructions, input_list, meta = self._build_task_context(task)
+            with observe(self, "reading", task):
+                instructions, input_list, meta = self._build_task_context(task)
         except ValueError:
             from drift.outcomes import block_task
             block_task(self, task, "Context cannot safely retain the complete original thought part. Check context limits or capture checkpoints, then approve a retry.")
@@ -1203,9 +1208,10 @@ class Brain:
                     elif tool_name == "respond":
                         result = await self._handle_respond(tool_args)
                     else:
-                        result = await asyncio.to_thread(
-                            execute_tool, tool_name, tool_args, self.env_path
-                        )
+                        with observe(self, task=task, tool=tool_name, arguments=tool_args):
+                            result = await asyncio.to_thread(
+                                execute_tool, tool_name, tool_args, self.env_path
+                            )
                 except Exception as e:
                     result = f"Error: {e}"
 
@@ -1255,7 +1261,7 @@ class Brain:
             try:
                 response = await self._invoke_model(task, input_list, instructions, meta)
             except Exception as e:
-                logger.error("LLM follow-up failed: %s", e)
+                logger.error("LLM follow-up failed (%s)", type(e).__name__)
                 from drift.outcomes import block_task
                 block_task(self, task, f"Provider follow-up failed ({type(e).__name__}); original input retained.")
                 self.state = "idle"
@@ -1382,6 +1388,7 @@ class Brain:
     def should_plan(self):
         return (self.thought_count > getattr(self, '_last_plan_attempt_thought_count', 0)
                 and self._cycles_since_plan >= Brain.PLAN_INTERVAL
+                and self.tasks.get_next_task() is None
                 and CallBudget(self.env_path).can_call())
 
     async def _plan(self):

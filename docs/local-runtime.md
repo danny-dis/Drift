@@ -1,70 +1,42 @@
-# Local continuous runtime
+# Keep a local Drift worker running
 
-Run from the Drift checkout using its dependency-equipped Python 3.12+ interpreter.
-Set `DRIFT_RUNTIME_TOKEN` in the launch environment for authenticated monitoring
-without changing browser access. Alternatively, `DRIFT_API_TOKEN` protects every
-API and takes precedence for monitoring too. Never put tokens in argv. Keep
-provider credentials in the existing environment, not these flags.
+The optional supervisor watches the HTTP service and its background worker. It can restart a worker that exits or stops responding. It does not fix a provider outage or approve blocked work for you.
+
+Use a source checkout with its dependencies installed and a built frontend. Stop any existing Drift runner before starting another. The supervisor refuses an occupied port, another supervisor for the box or a surviving worker.
+
+## Start it
+
+Set `DRIFT_RUNTIME_TOKEN` in the launch environment for monitoring. Alternatively, set `DRIFT_API_TOKEN` to protect every API; it takes precedence. Keep tokens out of command-line arguments and committed files.
+
+From the checkout, using Python 3.12 or 3.13:
 
 ```bash
-'C:/Users/pc/AppData/Local/Programs/Python/Python312/python.exe' -m drift.local_runtime \
-  --projects-root C:/Users/pc/Documents/projects \
-  --box C:/Users/pc/Documents/projects/Drift/local_box \
-  --state-dir C:/Users/pc/AppData/Local/hermes/profiles/chimera/drift-runtime \
-  --base-url http://127.0.0.1:47113/v1 --model command-a-03-2025 \
-  --daily-calls 12 --weekly-calls 60 --model-timeout 30 --attempts 1 \
-  --max-output 1800 --pace 5 --port 47116 --startup-timeout 180 \
+python -m drift.local_runtime \
+  --projects-root .. --box ./local_box --state-dir ../drift-runtime \
+  --base-url http://127.0.0.1:47113/v1 --model auto-free \
+  --daily-calls 12 --weekly-calls 60 \
+  --model-timeout 30 --attempts 1 --max-output 1800 \
+  --pace 5 --port 47116 --startup-timeout 180 \
   --max-restarts 5 --backoff 2 --max-backoff 60 --poll 5 \
   --log-bytes 2000000 --log-backups 3
 ```
 
-This is the launch contract, not an instruction to overlap the existing pilot.
-Stop/hand off the existing Drift runner before launching. The supervisor refuses
-an occupied HTTP port, another supervisor for this box, or a surviving worker.
+These are example limits, not a replacement for an existing launcher's settings. Use the same box when restarting. The projects root must exist; state and logs must sit outside the box. The gateway URL must be local. Choose a model that your gateway actually offers.
 
-Optional gateway recovery (append both flags to the command above):
+The supervisor forces free-only mode and disables shell execution, embeddings, model scoring and remote decisions. It does not reset call accounting or approve blocked tasks. One request can make one or two provider attempts, output is capped at 4,000 tokens and the model timeout cannot exceed 60 seconds.
 
-```bash
---gateway-cwd C:/Users/pc/Documents/projects/DMR-X \
---gateway-health-url http://127.0.0.1:47113/healthz \
---gateway-command '["C:/Users/pc/.bun/bin/bun.exe","--env-file=C:/Users/pc/Documents/projects/DMR-X/.env","run","start"]'
-```
+## What counts as healthy
 
-The command is a JSON argv array, executed without a shell. Spawned children get
-`DMRX_HOST=127.0.0.1`, `DMRX_FREE_TIER_STRATEGY=free_only`; gateway `PORT` comes
-from `--base-url` (47113 above). The command must remain foreground, not daemonize.
-An existing reachable HTTP listener is reused, including transient HTTP 503 during
-warmup. An owned gateway that remains running is never killed for slow readiness;
-only process exit/offline permits a bounded replacement. No companion services are
-started. No gateway command means externally managed inference, with no recovery.
+`GET /api/runtime` needs the configured bearer token and the usual origin checks. It returns HTTP 200 only while every configured worker task is alive and shutdown has not begun; otherwise it returns 503. Failures expose the exception class and time, not private messages or tracebacks.
 
-Required flags: projects-root (existing directory), box, state-dir (outside box),
-base-url (loopback only), model, daily-calls and weekly-calls (nonnegative integers).
-Shell, embeddings, remote decisions and model scoring are disabled; free-only is
-forced. Attempt count is 1 or 2; output cap 1..4000; model timeout is <=60 seconds.
-All timing values must be finite and positive. Defaults not shown above: pace=45,
-model-timeout=30, attempts=1, max-output=1000. The explicit launch above overrides them.
-No budget files are reset; blocked work is not approved automatically.
+After the startup grace period, three failed liveness probes cause a worker restart. Inference availability and exhausted budgets do not trigger restarts. With `--max-restarts 5`, a worker or owned gateway has at most six starts during that supervisor run. Exhaustion exits with status 1.
 
-`GET /api/runtime` uses the existing same-origin guard and always requires the
-configured API or runtime bearer token. Without either token it refuses to expose
-status. A dedicated runtime token does not disable or bypass a configured API
-token. It returns HTTP 200 only
-when every configured brain task is alive and shutdown has not begun; otherwise
-503. Per-brain states are starting/running/failed/stopped/cancelled. Errors retain
-exception class and timestamp only, never message, traceback, prompts or paths.
-Completed task handles/errors remain observable until the next application startup;
-sanitized task failure types are also emitted to rotating process logs.
+Console and error logs rotate outside the box. Ctrl+C requests shutdown. On a headless Windows launch, console signals may be unavailable, so a bounded terminate fallback may be needed.
 
-The supervisor checks process exit and authenticated HTTP/brain liveness. After
-startup grace, three failed probes cause stop/wait/restart. Inference availability
-and budget admission are not restart triggers. Worker and gateway each have at most
-`max-restarts + 1` lifetime starts, with capped exponential backoff; allowances do
-not reset on recovery. Exhaustion exits 1; graceful interrupt exits 0.
+## Optional gateway recovery
 
-Console/error logs rotate outside the box. Hidden OS lock files remain inside the
-box and are ignored by the existing file scanner; OS locks release on process exit.
-Ctrl+C/SIGTERM (Windows CTRL_BREAK) requests graceful shutdown, then owned children
-are forcibly stopped after bounded waits. Windows headless launches without a console
-may require terminate fallback. Preexisting shared gateway processes are never owned
-or stopped. This is local process supervision, not a sandbox or a 24-hour soak.
+Without `--gateway-command`, you manage the gateway yourself. To let Drift start it after an outage, supply both `--gateway-cwd` and `--gateway-command`. The latter is a JSON array of executable and arguments, not a shell command. Keep that process in the foreground and use the actual command for your gateway installation.
+
+Spawned gateways receive loopback/free-only settings and the port from `--base-url`. The supervisor reuses an existing listener, tolerates HTTP 503 during warmup and does not kill a running gateway just because readiness is slow. It stops only gateway processes it started itself.
+
+This is process supervision, not a sandbox or proof of weeks of unattended operation. Keep backups and check health, approvals and disk space.

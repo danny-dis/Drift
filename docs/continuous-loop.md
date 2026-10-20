@@ -1,12 +1,9 @@
-# Continuous bounded loop
+# Background work
 
-Implemented from PR #2's proposal, not merely the merged specification.
+Drift checks for saved input and pending tasks between pauses. Owner work comes before optional planning. Every model call still needs a place in the call allowance.
 
-- Explicit owner messages always preempt idle hysteresis; pending tasks still require deterministic budget admission.
-- Every incoming batch is inspected in bounded chunks. Only recognized small noise is discarded; nontrivial unknown input and high-value tails are retained.
-- Loop actions: research, reflect, plan, respond, sleep, ignore. An optional typed decision provider is advisory and cannot suppress high-value work or grant capabilities.
-- `loop_decisions.json` persists observed actions, model calls, latency and output counts. `missed_high_value` is **unmeasured** without labeled counterfactuals, not an asserted zero.
-- Memory, decision and budget files are excluded from new-input detection.
-- Shell, URL and sandbox permission checks stay deterministic. Decisions never constitute security approval.
+Input is inspected in bounded chunks. The older inbox can ignore recognized noise; the thought-capture path keeps the exact original. An optional decision provider may suggest an action, but it cannot override tool restrictions, approvals or budgets.
 
-See `brain.py`, `loop_decisions.py`, `/api/ui/decisions` and [implementation status](PR235-IMPLEMENTATION.md).
+`loop_decisions.json` records observed actions, model calls, latency and output counts. Drift does not claim to know how much useful work it missed without labelled examples. It excludes its own memory, budget and decision files from new-input detection.
+
+The code is in `drift/brain.py` and `drift/loop_decisions.py`. The dashboard reads recorded decisions from `/api/ui/decisions`.

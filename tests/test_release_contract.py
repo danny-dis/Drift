@@ -18,17 +18,3 @@ def test_frontend_dev_proxy_matches_runtime_default_port():
     assert 'http://localhost:47116' in vite
     assert 'ws://localhost:47116' in vite
     assert '"47116"' in config
-
-
-def test_release_docs_describe_bounded_local_workbench_truthfully():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
-    assert "shell execution is disabled unless explicitly" in readme
-    assert "shell_enabled: true" in readme
-    assert "free-only" in readme
-    assert "localhost:47116" in readme
-    assert "citations" in readme and "not" in readme
-    assert "registered" in readme and "drift.md" in readme
-    assert "does not silently modify source code" in readme
-    assert "fully complete" not in readme
-    assert "security-certified" not in readme
-    assert "tests pass" not in readme

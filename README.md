@@ -2,83 +2,69 @@
 
 [![CI](https://github.com/danny-dis/Drift/actions/workflows/ci.yml/badge.svg)](https://github.com/danny-dis/Drift/actions/workflows/ci.yml)
 
-Version **0.2.2** — [release notes](docs/releases/0.2.2.md).
+Drift is a notebook on your computer for unfinished thoughts, research and project notes. Save what you mean, even if it is messy. Optional AI can suggest a summary, questions or connections to your projects. It keeps your original words.
 
-A small thinking workspace on your computer. Write a messy thought, save it, and return to it later. Optional AI can suggest a summary, questions and project connections. Your original stays unchanged. Drift is not an autonomous coding factory.
+The current release is [0.2.2](https://github.com/danny-dis/Drift/releases/tag/v0.2.2). Read [what changed](docs/releases/0.2.2.md).
 
-## Install and start
+## Install and open it
 
-Install **Python 3.12 or 3.13** first. Check with `python --version`; on Windows, `py -3.12` can replace `python` in the commands below.
+Install Python 3.12 or 3.13, then run:
 
 ```bash
-python -m pip install "https://github.com/danny-dis/Drift/releases/download/v0.2.2/drift-0.2.2-py3-none-any.whl"
+python -m pip install --upgrade "https://github.com/danny-dis/Drift/releases/download/v0.2.2/drift-0.2.2-py3-none-any.whl"
 python -m drift.main --box ./drift_box --name Drift
 ```
 
-Open **http://localhost:47116** in your browser. Keep the terminal open while using Drift. Press Ctrl+C in that terminal to stop it.
+Open **http://localhost:47116**. Keep the terminal open; press Ctrl+C to stop Drift. The release includes the dashboard, so you do not need Node.js to use it.
 
-The wheel includes the dashboard: **Node.js is not needed to use this release.** Python package dependencies are downloaded during installation. You do not need an AI account or gateway to start saving and searching thoughts.
+`./drift_box` holds your saved work. Keep that folder when you upgrade, and pass the same `--box` path next time. To use another port, add `--port 47117` and open that port in your browser.
 
-`./drift_box` is the folder holding your saved work, relative to the terminal's current directory. The Getting started guide shows its full location. Keep that folder when upgrading; start the new version with the same `--box` path. Unsaved browser drafts are not a replacement for saving into that folder.
+## Use it each day
 
-To use a different port, add `--port 47117` and open that port instead. `DRIFT_HOST`, `DRIFT_PORT`, `DRIFT_BOX`, and `DRIFT_NAME` also set startup options. Existing `*_box` folders are discovered only when no explicit box is selected.
+1. Open **Inbox**, write a thought and click **Save**. Ctrl/Cmd+Enter also works. You do not need to choose a category.
+2. **Saved** means Drift has kept your original. It does not mean AI has finished processing it.
+3. Open the thought later to read the original and any saved suggestions. Review suggestions before acting on them.
 
-## Your first thought
+You can save and search without an AI connection. Drafts normally survive a reload, and retrying a failed save does not create another copy. If browser storage is blocked or full, keep the page open until the thought is saved. [How saving and recovery work](docs/thought-capture.md).
 
-1. Open **Inbox**, write anything, then click **Save**. No category is required. Ctrl/Cmd+Enter also saves.
-2. **Saved** means the exact original is in Drift. AI processing is separate; a save does not mean AI has finished.
-3. Open a saved thought to see its full original and, when available, separate suggestions and a report. Suggestions are unverified, not facts or replacements for your words.
+If AI work stops, open **Needs approval** and read the blocker. Fix the connection or settings before approving the same task to retry. Drift keeps incomplete replies for review; it does not label them finished or create replacement tasks to dodge a limit.
 
-The draft survives ordinary reloads. A failed save keeps the thought and its retry identity so retrying does not create another original. If browser storage is blocked or full, Drift says so: keep the page open until saving succeeds. Saved history supports search and pages. [Capture behavior and limits](docs/thought-capture.md).
+### What the other tabs do
 
-## Optional AI
+- **Office** shows a panda acting out the task Drift reports. You can pause movement. The scene is an illustration, not proof that extra workers are running.
+- **Projects** keeps related ideas together. You can link a repository, review its briefing and choose when to publish Drift's section in `drift.md`. Drift does not silently modify source code.
+- **Research** saves questions, sources and reports. Citations show where an answer came from; they do not prove it is correct.
+- **Activity & budget** shows tasks, call allowances and usage estimates. Estimates are not billing receipts.
+- **Needs approval** lists work waiting for your review. Approval lets that task continue; it does not start a coding agent.
+- **Workspace** shows the connection and runtime details.
 
-Open **Getting started** and choose **Check AI connection**. Opening the app or guide does not call a model. The explicit check consumes one permitted model call and uses no tools.
+## Connect optional AI
 
-The default configuration expects a separately running DMR-X gateway at `http://127.0.0.1:47113/v1`, using `auto-free`. **Drift does not install, start or configure DMR-X.** Without it, you can still save and search; the check reports AI unavailable rather than pretending it is ready. A successful check records a real reply at that time, not a guarantee that later calls will succeed.
+Open **Getting started** and choose **Check AI connection**. That explicit check uses one model call. Merely opening Drift or the guide does not call a model.
 
-Free-only mode refuses ordinary paid-provider routes and disables paid embeddings, model-based memory scoring and remote decisions. There is **no silent paid fallback**. Settings live in `config.yaml` when running from source, or the installed package's bundled defaults. `DRIFT_PROVIDER`, `DRIFT_BASE_URL`, and `DRIFT_MODEL` override provider settings; credentials belong in their environment variables, never committed files.
+The defaults expect a separately running DMR-X gateway at `http://127.0.0.1:47113/v1`, using `auto-free`. Drift does not install or start that gateway. Source settings are in `config.yaml`; installed releases include their own defaults. `DRIFT_PROVIDER`, `DRIFT_BASE_URL` and `DRIFT_MODEL` override them.
 
-Saving is local to the machine running Drift. **AI processing may send thought content through the gateway to a remote provider.** Recognized credentials are filtered for inference; filtering is not a guarantee that arbitrary private data is removed. Do not enter anything you would not want the configured provider to receive.
+Free-only mode refuses ordinary paid-provider routes and has no silent paid fallback. Keep provider credentials in environment variables, never in committed files or the dashboard's token field.
 
-When an inference call fails, your original remains safe and work waits for explicit review. Restore the connection, inspect **Approvals**, and approve the same blocked task to retry. Model-call and context limits stay enforced. Tasks are not duplicated to bypass a block. Context that cannot safely retain a complete thought part is also stopped for review rather than silently losing its tail.
+Your saved box is local. **AI processing may send thought content to a remote provider.** Credential filtering cannot remove every kind of private information, so only submit content you are willing to share with that provider.
 
-Explicitly truncated or incomplete provider replies are retained as partial reports and stopped for review, not labeled processed. Approved captures return to queued only when no sibling part remains blocked; interrupted status updates are reconciled after restart. A fully retained answer resumes its finalization without another model call.
+## Keep your work safe
 
-## Connection settings
+Back up the box before an upgrade. Do not run two services against it. If a checkpoint is corrupt or unreadable, restore a known-good backup or repair it; do not delete it to make Drift start.
 
-Usually no token is needed on your local installation. **Connection settings** stays collapsed until you open it or the server asks for authentication. If the owner configured `DRIFT_API_TOKEN`, enter that Drift API token and click **Save token**. Status and history refresh immediately; your draft is not cleared.
+Keep Drift on your own machine. It binds to `127.0.0.1` by default. Shell execution is off, and enabling it is not an operating-system sandbox. If you configured `DRIFT_API_TOKEN`, enter that Drift token in **Connection settings**, not a provider secret. The browser keeps it for the session when storage is available.
 
-The field uses `sessionStorage` when available and sends an Authorization header. If storage is blocked, it clearly warns that the token is held only until this page reloads; backend saving can still work. **Never enter a provider secret there.** Keep the service local; do not expose it to the public internet.
+Read [safety and limits](docs/safety.md) for authentication, repository access, usage accounting and recovery details. To restart failed workers automatically in a source installation, use the optional [local supervisor](docs/local-runtime.md).
 
-## Other sections
+## Is 0.2.2 ready for daily use?
 
-- **Office:** an illustrative high-DPI 2D workspace reflecting backend activity, not evidence of invisible workers. Animation has a pause control and respects reduced motion. [Office graphics](docs/office-scene.md).
-- **Projects:** register a repository and optional local path; only registered repositories are inspected. Review advisory briefings and explicitly publish the managed `drift.md` section. Human content is preserved; Drift does not silently modify source code.
-- **Research:** give a query and optional public URLs. Inspect retained sources, citations and reports. Missing/invalid evidence becomes `needs_review`; citation integrity is not independent fact checking. Repair resumes the same task.
-- **Attention:** tasks, actual persisted call allowances, receipts and recorded decisions. Free calls still consume call allowance. Receipt cost fields are estimates unless a provider returns actual cost; a route name is not a billing receipt.
-- **Approvals:** review blocked work before retrying. Marking a proposal implemented records a decision; it does not launch a coding agent.
-- **Status:** technical runtime information. Tabs support arrows, Home and End, with normal Tab navigation into content.
+Yes, for a local notebook with optional AI assistance. The released version passed 724 Python tests in each Windows/Linux and Python 3.12/3.13 CI job, plus 13 frontend checks. Release acceptance also covered a clean installation, real AI processing, browser use and recovery after restart.
 
-`/api/ui/usage` now reads the real per-box call ledger. Its call total is for the current ISO week; recorded failures and known receipt-cost estimates have lifetime scopes. Untracked success/provider/capability breakdowns are unavailable, not fabricated zeros. Corrupt call accounting fails closed for inference while saving remains separate.
+That is not a guarantee of correct AI answers or weeks of unattended operation. Review reports, keep backups and watch disk space. Drift reports degraded health when disk usage reaches 90%.
 
-## Safety and limits
+## Run from source
 
-**Shell execution is disabled unless explicitly enabled** with `shell_enabled: true`. Opting in is not an OS sandbox; use a container/VM for isolation. Generated files stay in the organism's box. Fetched pages, model output and repository contents are untrusted data, not permission to change files, enable tools or spend money.
-
-The backend binds to `127.0.0.1` by default. HTTP/WebSocket boundaries reject foreign browser origins; a CORS allowlist is not authentication. Public URL fetching refuses private/reserved addresses and URL credentials, validates redirects, pins the connected IP, and limits body size/time. Backup restoration rejects escaping paths and unsafe archive members.
-
-Registered-repository inspection disables executable Git helpers, including filesystem monitors, filters and external diff/text conversion. Project-document access refuses linked `drift.md` files; publishing atomically replaces a normal file and rejects unsafe or unavailable targets.
-
-Parent-repository status deliberately ignores dirtiness inside submodule worktrees, while still reporting changed submodule commit pointers. Register a submodule separately to inspect its worktree with its own sanitized configuration. Metadata inspection does not implicitly invoke signature verifiers.
-
-Existing unreadable or invalid `tasks.json` and `drift_ledger.json` checkpoints stop loading or mutation instead of being reset to empty. Back up the box and repair or restore a known-good checkpoint before retrying; do not delete damaged files merely to bypass the error. Disk-health warnings remain real: 90% or greater disk usage reports degraded health.
-
-Calls, output, context, tools, cycles and retries are bounded. External providers can have outages and rate limits. Optional remote decision adapters are disabled by default and are not necessary to use Drift. Long unattended usefulness and semantic accuracy cannot be guaranteed by a test suite.
-
-## Development
-
-Source builds require Python 3.12+, Node 20+ and npm:
+Use Python 3.12 or 3.13, Node.js 22.23.3 or newer, and npm. CI uses Node 22.
 
 ```bash
 python -m pip install -e '.[test]'
@@ -87,6 +73,4 @@ python -m pytest tests -q -p no:cacheprovider
 python -m drift.main --box ./drift_box --name Drift
 ```
 
-`npm run build` explicitly selects production React even if the parent shell exports `NODE_ENV=development`. CI builds the locked frontend before Python tests so executable UI regressions are actually exercised. Fixture tests do not certify live inference; release acceptance separately tests a clean installed wheel, real gateway replies and browser/restart journeys.
-
-For hot reload, start the backend and run `cd frontend && npm run dev`. Vite uses port 5173 and proxies to 47116. If needed, set `DRIFT_ALLOWED_ORIGINS=http://localhost:5173`; keep authentication separate from origin policy.
+The build selects production React even if your shell sets `NODE_ENV=development`. For hot reload, run `cd frontend && npm run dev`; Vite uses port 5173 and proxies to 47116. Set `DRIFT_ALLOWED_ORIGINS=http://localhost:5173` if needed. An allowed browser origin is not authentication.

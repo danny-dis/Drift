@@ -1,24 +1,20 @@
-# Drift office scene
+# The Office tab
 
-The old 384-pixel bitmap bedroom is replaced by original procedural 2D isometric office artwork. It is not a photorealistic 3D render.
+The Office tab shows a panda in a small 2D office. It uses Drift's reported activity to choose a pose and place: reading, writing, thinking, browsing or resting. It does not represent extra agents or measure how close a task is to completion.
 
-- `office/geometry.ts`: projection and reusable material primitives.
-- `office/room.ts`: timber floor, cutaway walls, window, curtains, daylight and woven rug.
-- `office/furniture.ts`: workstation, monitor, individual keyboard keys, task lamp, chair, shelving, sofa, books and plants.
-- `office/character.ts`: softly shaded crab and state-aware expression.
-- `office/renderer.ts`: cached static layers, furniture/character depth ordering, high-DPI output, responsive sizing and visibility/motion controls.
-- `office/OfficeCanvas.tsx`: reusable React lifetime, accessible fallback and snapshot boundary.
-- `OfficePanel.tsx`: optional dashboard office with a truthful backend-status caption and an opt-in animation control.
-- `GameWorld.tsx`: legacy prop and snapshot compatibility bridge.
+**Closer look** opens the reported task and its saved report. Saved work is labelled as saved, not presented as an active project. If the backend disconnects, the scene shows the lost connection rather than inventing progress.
 
-The Office tab is optional; Inbox remains the initial tab. Animation defaults off and reduced-motion preferences override animation. Hidden, offscreen and unmounted scenes stop animation and release resources. Device pixel ratio is capped at two. Character location is illustrative, not a tracking feed; disconnected status does not invent active work.
+You can pause movement. Drift remembers that preference when browser storage is available and respects reduced-motion settings. Hidden or offscreen scenes pause animation. Closing the tab releases the renderer's resources. Inbox remains the first tab.
 
-## Acceptance
+## Source files
 
-- Production frontend compiles and builds.
-- Office is reachable through the active dashboard, not only the legacy app.
-- Desktop and mobile scenes contain real rendered furniture, readable controls and no horizontal overflow.
-- Screenshots are captured from the running application and reviewed visually.
-- Default static rendering, opt-in animation, reduced motion and repeated tab unmounts are exercised in a real browser.
+The files are under `frontend/src/`:
 
-Verification artifacts live in `C:/Users/pc/AppData/Local/Temp/drift-complete-zhf20q5y`; acceptance items above are criteria, not an assertion that an unrun check passed.
+- `office/geometry.ts`, `room.ts` and `furniture.ts` draw the room and furniture.
+- `office/character.ts`, `layout.ts` and `motion.ts` draw the panda and move it around obstacles.
+- `office/renderer.ts` caches static layers and caps device pixel ratio at two.
+- `office/OfficeCanvas.tsx` owns the canvas, accessible fallback and snapshots.
+- `office/DeskView.tsx` and `work-context.ts` connect the view to actual task data.
+- `OfficePanel.tsx` contains the controls. `GameWorld.tsx` keeps the older component interface compatible.
+
+Run `npm test` in `frontend/` for the Office regressions. Check desktop and mobile rendering in a browser as well; a passing build cannot show you whether a paw misses the keyboard or a button is clipped.

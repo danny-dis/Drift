@@ -1,11 +1,11 @@
-# Persistent research pipeline
+# Saved research
 
-The public `ResearchStore` retains source-linked queries, notes, tool and script lineage, file-change provenance, reports and bounded repair context. Scripts are recorded, never executed by the store. Relative paths are validated against the research root.
+A research session keeps its question, sources, notes and report attempts on disk. It also records the phase, revision and next action so a restart does not discard the work. Failed reports stay available for review.
 
-Checkpoints include phase, revision, next action and timestamp. Old records are interpreted through backward-compatible defaults; accepted new writes persist current checkpoints. Fetches actually performed by Brain are recorded as tool provenance. Sources and report attempts survive restart; prior failed reports are not substituted with invented evidence.
+`ResearchStore` records tool, script and file-change history. Recording a script does not execute it. Relative paths must stay inside the research folder, and an OS-backed writer lock prevents separate processes from overwriting each other's updates. The lock releases when its owner exits.
 
-`POST /api/ui/research/sessions/{id}/resume` requests a bounded owner retry of the **same task and same sources**. A durable pending-repair marker allows recovery if task persistence fails, without spending another attempt. Completed work and exhausted repairs are rejected.
+A citation check verifies the link to a retained source and quote. It does not prove the finding is true. Coverage and conflict scores use word matching, not semantic certainty. Read the sources yourself before relying on a report.
 
-Citation integrity is a structural check, not factual verification. Candidate coverage/conflict scores are lexical heuristics, not semantic probabilities. The dashboard labels the limitations and shows provenance, repair history and explicit resume controls.
+To retry a stopped session, use the explicit resume control. `POST /api/ui/research/sessions/{id}/resume` keeps the same task and sources, with a limited number of repairs. An interrupted repair can recover without spending another attempt. Completed sessions and exhausted repairs cannot be resumed through that endpoint.
 
-See `research.py`, `brain.py`, `ui_api.py` and [implementation status](PR235-IMPLEMENTATION.md).
+The implementation is in `drift/research.py`, `drift/brain.py` and `drift/ui_api.py`.

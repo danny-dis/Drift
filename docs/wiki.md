@@ -1,6 +1,6 @@
 # Wiki pages
 
-Wiki is a separate page in the 0.2.3 workspace. It creates a saved answer from your thoughts, ideas and project notes when you request one. A project's `drift.md` briefing is still a different document.
+Open **Wiki** from the page navigation to create a saved answer from your thoughts, ideas and project notes. You choose when to request generation. A project's `drift.md` briefing is still a different document.
 
 ## Create a page
 
@@ -10,6 +10,8 @@ Wiki is a separate page in the 0.2.3 workspace. It creates a saved answer from y
 4. Open the saved page to check its status. **Refresh saved page** reads the existing attempt without queueing another one.
 
 Your configured AI provider must be reachable, and the request must fit your call allowance and context limit. Free-only mode and the normal usage checks still apply. A request can remain queued or become blocked; a successful queue response does not mean the answer is finished.
+
+The release tests generated a real page with Mercury 3, reopened it through a restarted worker and followed its source links in the browser. Refreshing and reloading used no extra model calls. That test does not change your provider settings or make generated statements verified facts.
 
 ## Read the result
 

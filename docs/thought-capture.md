@@ -4,15 +4,21 @@ Drift is a local-first idea and research workbench, not a clinical ADHD product.
 
 ## Capture first
 
-1. Open the Inbox and write or paste the thought as it is.
+1. Open **Thoughts** and write or paste the thought as it is.
 2. Save with the button or Ctrl/Cmd + Enter. Ordinary Enter creates a new line.
 3. Keep typing while a save is in flight. A successful older save does not clear a newer draft.
 4. If the save is not confirmed, the original submission and retry identity remain available. Save retries that original first; a newer draft stays separate.
-5. Search saved original thoughts, page through history, and expand an entry to read the complete original. Generated summaries and questions appear separately.
+5. Search saved history and open a thought to read its complete original. Generated summaries and questions appear separately.
 
 The server commits each accepted original to `captures.sqlite3` before any model call. Reusing the same client submission ID with the same original is a retry, not a second capture. Two independent submissions with identical text remain two separate thoughts. There is no automatic deletion, text rewriting, or content-based deduplication.
 
 The explicit limit is **1,000,000 Unicode characters per capture**. Oversized entries are rejected rather than truncated, and the browser retains the draft. Storage capacity is finite; save errors are shown rather than reported as success.
+
+## Edit, archive and restore
+
+Open a saved thought and choose **Edit thought** to change its current text. The original stays available in its details. Editing does not turn an old AI suggestion into a new answer. Revision conflicts ask you to reload rather than overwrite another edit.
+
+**Archive thought** asks for confirmation, hides the thought from active lists and holds unfinished processing. You can include archived records in the list and restore them later. Restore makes the record visible; it does not approve its held tasks or recreate missing processing parts. Review **Needs approval** before allowing that work to continue.
 
 ## Local drafts and privacy
 
@@ -32,7 +38,7 @@ Complete answer artifacts are retained before finalization and reused after inte
 
 When the provider explicitly reports a token limit or another incomplete termination, Drift retains the partial text separately, prevents incomplete tool execution, and blocks the task for review. Approving the same task preserves its original and report metadata. The capture stays `needs_review` while any part remains blocked, otherwise returns to `queued`; restart reconciliation repairs an interrupted approval projection without another model call.
 
-Processing may wait when the model is unavailable or the configured daily/weekly call allowance is exhausted. The Attention page exposes actual call counts, remaining admission, wait reason and reset time separately from estimated money spent. Free inference still uses the call allowance.
+Processing may wait when the model is unavailable or the configured daily/weekly call allowance is exhausted. **Activity & budget** shows actual call counts, remaining allowance, wait reason and reset time separately from estimated money spent. Free inference still uses the call allowance.
 
 ## Ideas, projects and research
 
@@ -46,4 +52,4 @@ Research retains readable fetched sources, exact citations and bounded review/re
 
 Focused regressions cover exact originals, concurrent burst saves, distinct repeated thoughts, client-ID retries, long entries, pagination/search/reopening, checkpoint recovery, credential redaction, project publication and model failures. Browser acceptance separately exercises real keyboard/form interactions, interrupted saves and responsive layouts.
 
-Recorded artifacts for this work are in `C:/Users/pc/AppData/Local/Temp/drift-complete-zhf20q5y`. The pre-office integrated Python suite passed 494 tests. A real configured-model check fetched Python documentation, completed cited research, processed a thought into advisory insights and confirmed the original survived reopening. This is not a month-long soak test, a clinical validation, a multi-device synchronization feature or a claim that arbitrary generated findings are true.
+The [0.2.3 release checks](releases/0.2.3.md) also used a real Mercury 3 response to process a proposal, preserve its exact original and reopen the result after restart. Retrying the same saved capture did not spend another call. This is not a long-duration reliability test, clinical validation or a multi-device synchronization feature. Generated findings still need review.

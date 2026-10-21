@@ -4,16 +4,14 @@
 
 Drift is a notebook on your computer for unfinished thoughts, research and project notes. Save what you mean, even if it is messy. Optional AI can suggest a summary, questions or connections to your projects. It keeps your original words.
 
-The current release is [0.2.2](https://github.com/danny-dis/Drift/releases/tag/v0.2.2). Read [what changed](docs/releases/0.2.2.md).
-
-This checkout contains the **0.2.3 candidate**, with editable thoughts, ideas and projects, a direct mind map and an explicitly requested wiki. It has not yet replaced the published release. Read the [candidate notes](docs/releases/0.2.3.md), or use the source instructions below to try it with a disposable box.
+Version [0.2.3](https://github.com/danny-dis/Drift/releases/tag/v0.2.3) adds editable thoughts, ideas and projects, a directly accessible mind map and wiki pages you can ask AI to create. Read [what changed](docs/releases/0.2.3.md).
 
 ## Install and open it
 
 Install Python 3.12 or 3.13, then run:
 
 ```bash
-python -m pip install --upgrade "https://github.com/danny-dis/Drift/releases/download/v0.2.2/drift-0.2.2-py3-none-any.whl"
+python -m pip install --upgrade "https://github.com/danny-dis/Drift/releases/download/v0.2.3/drift-0.2.3-py3-none-any.whl"
 python -m drift.main --box ./drift_box --name Drift
 ```
 
@@ -23,7 +21,7 @@ Open **http://localhost:47116**. Keep the terminal open; press Ctrl+C to stop Dr
 
 ## Use it each day
 
-1. Open **Thoughts** (**Inbox** in 0.2.2), write a thought and save it. Ctrl/Cmd+Enter also works. You do not need to choose a category.
+1. Open **Thoughts**, write a thought and save it. Ctrl/Cmd+Enter also works. You do not need to choose a category.
 2. **Saved** means Drift has kept your original. It does not mean AI has finished processing it.
 3. Open the thought later to read the original and any saved suggestions. Review suggestions before acting on them.
 
@@ -31,9 +29,11 @@ You can save and search without an AI connection. Drafts normally survive a relo
 
 If AI work stops, open **Needs approval** and read the blocker. Fix the connection or settings before approving the same task to retry. Drift keeps incomplete replies for review; it does not label them finished or create replacement tasks to dodge a limit.
 
-### What the other tabs do
+### Find the other pages
 
-The 0.2.3 workspace adds **Ideas**, **Mind map** and **Wiki** as direct pages. Its thought, idea and project screens support add, view, edit, archive and restore. Archive preserves the original and history while holding unfinished work; restore does not approve that work. You can bookmark a page and use browser Back and Forward. The page selector replaces the tab row on a phone.
+Thoughts, ideas and projects have their own lists and detail pages. You can add, view, edit, archive and restore each one. Editing a thought keeps its original wording. Archive hides work and pauses unfinished processing; restore brings it back without approving that processing.
+
+You can bookmark pages and use browser Back and Forward. On a phone, use the page selector in place of the tab row.
 
 - **Office** shows a panda acting out the task Drift reports. You can pause movement. The scene is an illustration, not proof that extra workers are running.
 - **Projects** keeps related ideas together. You can link a repository, review its briefing and choose when to publish Drift's section in `drift.md`. Drift does not silently modify source code.
@@ -63,11 +63,13 @@ Keep Drift on your own machine. It binds to `127.0.0.1` by default. Shell execut
 
 Read [safety and limits](docs/safety.md) for authentication, repository access, usage accounting and recovery details. To restart failed workers automatically in a source installation, use the optional [local supervisor](docs/local-runtime.md).
 
-## Is 0.2.2 ready for daily use?
+## What has been tested?
 
-Yes, for a local notebook with optional AI assistance. The released version passed 724 Python tests in each Windows/Linux and Python 3.12/3.13 CI job, plus 13 frontend checks. Release acceptance also covered a clean installation, real AI processing, browser use and recovery after restart.
+Local Windows runs passed 874 Python tests on both Python 3.12 and 3.13, with one symlink case skipped on that host. All 19 frontend checks passed. Browser tests covered ten pages at five screen sizes, including editing, archive/restore and recovery after errors.
 
-That is not a guarantee of correct AI answers or weeks of unattended operation. Review reports, keep backups and watch disk space. Drift reports degraded health when disk usage reaches 90%.
+Real Mercury 3 tests generated a wiki page with saved sources and processed a thought into an advisory answer. Both results survived restart; reading them and retrying the saved capture did not spend another model call. The package also installed in a clean environment. The release workflow checks Windows and Linux on both supported Python versions before publishing; the CI badge above links to the recorded runs.
+
+These checks do not prove that AI answers are correct or that Drift can run unattended for weeks. Review reports, keep backups and watch disk space. Drift reports degraded health when disk usage reaches 90%.
 
 ## Run from source
 

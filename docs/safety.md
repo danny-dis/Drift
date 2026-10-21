@@ -24,6 +24,14 @@ Only registered repository paths are inspected. Git inspection disables executab
 
 Parent-repository status ignores dirtiness inside submodule worktrees but reports changed submodule commits. Register a submodule separately to inspect it. Metadata inspection does not invoke signature verifiers.
 
+## Archive is not deletion or approval
+
+Archiving keeps the record and its history while excluding its sources from unfinished processing. Linked originals and generated ideas share processing lineage, so hiding only one copy cannot make archived text eligible through another projection. Work from unrelated active sources can continue.
+
+Restore makes a record visible again. Approving a held task covers the source revisions you reviewed, not future edits or a later archive/restore cycle. Drift checks selected context again before model attempts, tools and result publication. A request already sent cannot be unsent, but a newly archived source must not publish a fresh result.
+
+Generated planning files stay readable; their text is not promoted to owner instructions. Background reflection also checks source state inside its storage worker before saving an insight.
+
 ## Recovery
 
 Back up the box before upgrades. Unreadable or invalid `tasks.json` and `drift_ledger.json` stop loading or mutation; they are not replaced with empty state. Restore a known-good checkpoint or repair the file rather than deleting it to bypass an error.

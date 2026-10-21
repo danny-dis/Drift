@@ -81,6 +81,6 @@ def test_release_versions_and_recursive_package_data_agree():
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     frontend = json.loads((root / "frontend" / "package.json").read_text(encoding="utf-8"))
     lock = json.loads((root / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
-    assert metadata["project"]["version"] == frontend["version"] == lock["version"] == lock["packages"][""]["version"] == "0.2.2"
+    assert metadata["project"]["version"] == frontend["version"] == lock["version"] == lock["packages"][""]["version"] == "0.2.3"
     assert metadata["build-system"]["build-backend"] == "setuptools.build_meta"
     assert "resources/**/*" in metadata["tool"]["setuptools"]["package-data"]["drift"]

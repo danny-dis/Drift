@@ -51,4 +51,4 @@ jobs:
       - name: Build sdist and wheel from sdist
         run: python -m build
       - name: Verify clean wheel install outside checkout
-        run: python -m drift.release_build --smoke dist/*.whl --expect-version 0.2.2
+        run: python -m drift.release_build --smoke dist/*.whl --expect-version 0.2.3

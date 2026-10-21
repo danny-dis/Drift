@@ -46,8 +46,12 @@ def test_settings_refresh_without_remounting_or_clearing_drafts():
 
 def test_all_tab_panels_have_matching_identifiers():
     app = (SRC / "DriftApp.tsx").read_text(encoding="utf-8")
-    for tab in ('status', 'inbox', 'office', 'projects', 'research', 'attention', 'approvals'):
+    for tab in ('status', 'office', 'research', 'attention', 'approvals', 'mind-map', 'wiki'):
         assert f'id="drift-panel-{tab}" aria-labelledby="drift-tab-{tab}"' in app
+    navigation = (SRC / 'navigation.ts').read_text(encoding='utf-8')
+    for tab in ('inbox', 'ideas', 'projects'):
+        assert f"id:'{tab}'" in navigation
+    assert 'id={`drift-panel-${tab}`} aria-labelledby={`drift-tab-${tab}`}' in app
     assert 't.id !== tab' in app and 'hidden role="tabpanel"' in app
 
 
@@ -84,7 +88,7 @@ Module._load = function(name, ...rest) {
   if (name === 'react/jsx-runtime') return jsx;
   return original.call(this, name, ...rest);
 };
-require.extensions['.tsx'] = function(mod, filename) {
+require.extensions['.ts'] = require.extensions['.tsx'] = function(mod, filename) {
   mod._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
     compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020,
       jsx: ts.JsxEmit.ReactJSX}
@@ -95,7 +99,12 @@ const Guide = require(path.join(src, 'SetupGuide.tsx')).default;
 let selected, focused, prevented = 0;
 const tabs = [{id:'inbox', label:'Inbox'}, {id:'status', label:'Status'}, {id:'office', label:'Office'}];
 const tree = Tabs({tabs, selected: 'inbox', onSelect: id => {selected = id;}});
-const buttons = tree.props.children;
+const desktop = tree.props.children.find(child => child.props.role === 'tablist');
+const buttons = desktop.props.children;
+const mobile = tree.props.children.find(child => child.props['aria-label'] === 'Drift pages');
+const select = mobile.props.children.find(child => child.type === 'select');
+assert.deepEqual(select.props.children.map(option => option.props.value), tabs.map(tab => tab.id));
+select.props.onChange({target:{value:'office'}}); assert.equal(selected, 'office');
 buttons.forEach((button, i) => button.ref({focus: () => {focused = i;}}));
 assert.deepEqual(buttons.map(b => b.props.tabIndex), [0,-1,-1]);
 assert.equal(buttons[0].props.id, 'drift-tab-inbox');

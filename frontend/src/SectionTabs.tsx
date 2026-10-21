@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import {routeHref, type Section} from "./navigation";
 import type { KeyboardEvent } from "react";
 
 type Props<T extends string> = {
@@ -8,8 +9,8 @@ type Props<T extends string> = {
 };
 
 export default function SectionTabs<T extends string>({ tabs, selected, onSelect }: Props<T>) {
-  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
-  const navigate = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+  const buttons = useRef<(HTMLAnchorElement | null)[]>([]);
+  const navigate = (event: KeyboardEvent<HTMLAnchorElement>, index: number) => {
     let next: number;
     switch (event.key) {
       case "ArrowRight": next = (index + 1) % tabs.length; break;
@@ -23,15 +24,18 @@ export default function SectionTabs<T extends string>({ tabs, selected, onSelect
     buttons.current[next]?.focus();
   };
   return (
+    <>
+    <nav className="mobile-navigation" aria-label="Drift pages"><label htmlFor="mobile-section">Go to page</label><select id="mobile-section" value={selected} onChange={event=>onSelect(event.target.value as T)}>{tabs.map(tab=><option key={tab.id} value={tab.id}>{tab.label}</option>)}</select></nav>
     <nav className="tabs" role="tablist" aria-label="Drift sections" aria-orientation="horizontal">
       {tabs.map((tab, index) => (
-        <button key={tab.id} type="button" role="tab" id={`drift-tab-${tab.id}`}
+        <a key={tab.id} href={routeHref({section:tab.id as Section})} role="tab" id={`drift-tab-${tab.id}`}
           aria-controls={`drift-panel-${tab.id}`} aria-selected={selected === tab.id}
           tabIndex={selected === tab.id ? 0 : -1}
           ref={button => { buttons.current[index] = button; }}
           className={selected === tab.id ? "tab active" : "tab"}
-          onClick={() => onSelect(tab.id)} onKeyDown={event => navigate(event, index)}>{tab.label}</button>
+          onClick={event => { if(event.button===0&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey) {event.preventDefault();onSelect(tab.id);} }} onKeyDown={event => navigate(event, index)}>{tab.label}</a>
       ))}
     </nav>
+    </>
   );
 }

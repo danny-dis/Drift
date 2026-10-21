@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {parseRoute, routeHref, SECTIONS, type Section} from './navigation';
+import EntityScreen from './EntityScreen';
+import MindMap from './MindMap';
+import WikiScreen from './WikiScreen';
 import "./drift.css";
+import "./ux.css";
 import ThoughtInbox from "./ThoughtInbox";
 import ThoughtInsights from "./ThoughtInsights";
 import BudgetSummary from "./BudgetSummary";
-import ProjectIntelligence from "./ProjectIntelligence";
 import OfficePanel from "./OfficePanel";
 import { officeWork, type WorkActivity } from "./office/work-context";
-import { projectForNode } from "./project-navigation";
 import SetupGuide from "./SetupGuide";
 import type { SetupStatus } from "./SetupGuide";
 import SectionTabs from "./SectionTabs";
@@ -28,16 +31,8 @@ type Session = { id: string; query: string; state: string; phase?: string; next_
 type Decisions = { loop: Record<string, unknown>; memory: Record<string, unknown> };
 type Task = {id: string; goal: string; status: string; phase: string; project_id?: string; last_evidence?: string; blockers?: string[]; source_text?: string; capture_id?: string};
 
-type Tab = "status" | "inbox" | "office" | "projects" | "research" | "attention" | "approvals";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "office", label: "Office" },
-  { id: "projects", label: "Projects" },
-  { id: "research", label: "Research" },
-  { id: "attention", label: "Activity & budget" },
-  { id: "approvals", label: "Needs approval" },
-  { id: "status", label: "Workspace" },
-];
+type Tab = Section;
+const TABS = SECTIONS;
 
 function authHeaders(): Record<string, string> {
   const t = sessionToken.read();
@@ -51,7 +46,18 @@ function isHttp(url: string): boolean {
 }
 
 export default function DriftApp() {
-  const [tab, setTab] = useState<Tab>("inbox");
+  const [route, setRoute] = useState(() => parseRoute(typeof window === 'undefined' ? '' : window.location.hash));
+  const tab = route.section;
+  const setTab = (section:Tab) => { window.location.hash = routeHref({section}); };
+  useEffect(() => {
+    const changed = () => setRoute(parseRoute(window.location.hash));
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
+  useEffect(() => {
+    const focused = document.activeElement;
+    if (focused?.getAttribute('role') !== 'tab' && focused?.tagName !== 'SELECT') document.getElementById(`drift-panel-${tab}`)?.focus();
+  }, [tab, route.id]);
   const [token, setToken] = useState(() => sessionToken.read());
   const [tokenNote, setTokenNote] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -64,7 +70,8 @@ export default function DriftApp() {
   const [statusErr, setStatusErr] = useState("");
   const [statusLoading, setStatusLoading] = useState(true);
   const [identity, setIdentity] = useState<{ name?: string; animal?: string }>({});
-  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [resourceErrors, setResourceErrors] = useState<Record<string,string>>({});
+  const [allLoading, setAllLoading] = useState(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [findings, setFindings] = useState<{ summary: string; confidence?: number; timestamp?: string; evidence?: unknown }[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
@@ -82,17 +89,10 @@ export default function DriftApp() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const reportRegion = useRef<HTMLElement>(null);
   const [sessionsNote, setSessionsNote] = useState("");
-  const [selected, setSelected] = useState<{ kind: string; id: string; label: string; detail: string } | null>(null);
-  const [projectDetail, setProjectDetail] = useState<{ events: { summary: string }[]; ideas: Idea[]; drift_md: string; intelligence?: Record<string, unknown> } | null>(null);
-  const [projectLoading, setProjectLoading] = useState(false);
-  const projectSequence = useRef(0);
 
   // forms (inputs preserved on failed capture)
-  const [ideaText, setIdeaText] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [reg, setReg] = useState({ name: "", repo: "", local_path: "", importance: "0.5" });
-  const [regNote, setRegNote] = useState("");
   const [sessQ, setSessQ] = useState("");
   const [sessUrls, setSessUrls] = useState("");
   const [sessProj, setSessProj] = useState("");
@@ -109,15 +109,18 @@ export default function DriftApp() {
   }, []);
 
   const loadAll = useCallback(async () => {
+    const failures: Record<string,string> = {};
+    setAllLoading(true);
     const get = async (url: string) => {
       try {
         const res = await fetch(url, { headers: authHeaders() });
         if (!res.ok) {
           if (res.status === 401) { setAuthRequired(true); setSettingsOpen(true); }
+          failures[url] = `${url}: ${res.status}${res.status === 401 ? " — session token required" : " — data unavailable"}`;
           return null; // do not pretend unavailable fields work
         }
         return await res.json();
-      } catch { return null; }
+      } catch { failures[url] = `${url}: cannot reach Drift`; return null; }
     };
     const [id, ip, uj, rs, ev, bg, cd, rc, ap, ss, ts, dc] = await Promise.all([
       get("/api/identity"), get("/api/ui/ideas"), get("/api/ui/projects"),
@@ -128,7 +131,7 @@ export default function DriftApp() {
     setDecisions(dc || null);
     if (ts) setTasks(ts.tasks || []);
     if (id) setIdentity(id);
-    if (ip) setIdeas(ip.ideas || []);
+
     if (uj) setProjects(uj.projects || []);
     if (rs) setFindings(rs.findings || []);
     if (ev) setEvidence(ev.evidence || []);
@@ -142,6 +145,7 @@ export default function DriftApp() {
       setSessionsNote(current => current === "Research sessions unavailable; check backend/authentication" ? "" : current);
     }
     else setSessionsNote("Research sessions unavailable; check backend/authentication");
+    setResourceErrors(failures);setAllLoading(false);
   }, []);
 
   const loadSetup = useCallback(async () => {
@@ -205,36 +209,6 @@ export default function DriftApp() {
   }, [loadStatus, tab]);
   useEffect(() => { if (activeTaskId) reportRegion.current?.focus(); }, [activeTaskId]);
 
-  const submitIdea = async () => {
-    if (!ideaText.trim()) return;
-    setMsg("capturing…"); setErr("");
-    try {
-      const res = await fetch("/api/ui/ideas", { method: "POST", headers: authHeaders(), body: JSON.stringify({ text: ideaText }) });
-      if (!res.ok) { setErr(`capture failed: ${res.status}`); return; } // preserve input
-      setIdeaText(""); setMsg("idea captured");
-      const d = await (await fetch("/api/ui/ideas", { headers: authHeaders() })).json();
-      setIdeas(d.ideas || []);
-    } catch (e) { setErr(`capture failed: ${String(e)}`); } // preserve input
-  };
-
-  const registerProject = async () => {
-    setRegNote(""); setErr("");
-    try {
-      const body: Record<string, unknown> = { name: reg.name, repo: reg.repo };
-      if (reg.local_path.trim()) body.local_path = reg.local_path.trim();
-      const imp = parseFloat(reg.importance);
-      if (!Number.isNaN(imp)) body.importance = imp;
-      const res = await fetch("/api/ui/projects", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) });
-      if (!res.ok) {
-        if (res.status === 404 || res.status === 405) setRegNote("Project endpoint unavailable — input kept");
-        else setRegNote(`register failed: ${res.status} — input kept`);
-        return; // preserve input
-      }
-      setReg({ name: "", repo: "", local_path: "", importance: "0.5" }); setRegNote("project registered");
-      await loadAll();
-    } catch (e) { setRegNote(`register failed: ${String(e)} — input kept`); }
-  };
-
   const createSession = async () => {
     if (!sessQ.trim()) return;
     setSessionsNote(""); setErr("");
@@ -280,20 +254,6 @@ export default function DriftApp() {
     } catch (e) { setTaskReport(String(e)); }
   };
 
-  const openProject = async (p: Project) => {
-    const sequence = ++projectSequence.current;
-    setProjectDetail(null); setProjectLoading(true);
-    setSelected({ kind: "project", id: p.id, label: p.name, detail: `${p.repo}${p.local_path ? ` · ${p.local_path}` : ""}` });
-    try {
-      const res = await fetch(`/api/ui/projects/${p.id}`, { headers: authHeaders() });
-      if (!res.ok) { if (sequence === projectSequence.current) setProjectDetail(null); return; }
-      const d = await res.json();
-      if (sequence !== projectSequence.current) return;
-      setProjectDetail({ events: d.events || [], ideas: d.ideas || [], drift_md: d.drift_md || "", intelligence: d.intelligence || undefined });
-    } catch { if (sequence === projectSequence.current) setProjectDetail(null); }
-    finally { if (sequence === projectSequence.current) setProjectLoading(false); }
-  };
-
   const approve = async (id: string) => {
     setErr("");
     try {
@@ -305,28 +265,20 @@ export default function DriftApp() {
     } catch (e) { setErr(`approve failed: ${String(e)}`); }
   };
 
-  // deterministic lightweight mind map (no graph lib)
-  const nodes = useMemo(() => {
-    const ns = [
-      ...projects.slice(0, 12).map(p => ({ id: `p:${p.id}`, kind: "project", label: p.name })),
-      ...ideas.slice(0, 12).map(i => ({ id: `i:${i.id}`, kind: "idea", label: i.text.slice(0, 42) })),
-    ];
-    return ns.slice(0, 24);
-  }, [projects, ideas]);
-  const edges = useMemo(() => {
-    const e: { source: string; target: string; relation: string }[] = [];
-    ideas.forEach(i => (i.related_projects || []).forEach(pid => { if (nodes.some(n => n.id === `p:${pid}`)) e.push({ source: `i:${i.id}`, target: `p:${pid}`, relation: "about" }); }));
-    const ps = projects.slice(0, 12);
-    for (let k = 1; k < ps.length; k++) e.push({ source: `p:${ps[k - 1].id}`, target: `p:${ps[k].id}`, relation: "shelf-order" });
-    return e.slice(0, 32);
-  }, [ideas, projects, nodes]);
-  const pos = (idx: number) => ({ left: `${8 + ((idx * 37) % 84)}%`, top: `${12 + ((idx * 53) % 70)}%` });
+  const screenResources: Partial<Record<Tab,string[]>> = {
+    office:['/api/ui/tasks'],research:['/api/ui/research','/api/ui/research/evidence','/api/ui/research/sessions'],
+    attention:['/api/ui/tasks','/api/ui/budget','/api/ui/attention/candidates','/api/ui/receipts','/api/ui/decisions'],
+    approvals:['/api/ui/approvals'],
+  };
+  const screenFailures = (screenResources[tab]||[]).map(path=>resourceErrors[path]).filter(Boolean);
+  const screenError = screenFailures.length > 0;
   const activeTask = tasks.find(task => task.id === activeTaskId);
   const work = officeWork(String(status?.state || 'unknown'), status?.activity, status?.last_activity, tasks, projects, Date.now());
   const savedTask = [...tasks].reverse().find(task => task.status === 'complete' && task.last_evidence);
 
   return (
     <main className="drift-shell">
+      <a className="skip-link" href="#main-content" onClick={event=>{event.preventDefault();document.getElementById(`drift-panel-${tab}`)?.focus();}}>Skip to page content</a>
       <header className="topbar">
         <div><h1 className="brand">DRIFT</h1><span className="tagline">Save thoughts now. Make sense of them later.</span></div>
         <div className="status" aria-live="polite">
@@ -334,7 +286,9 @@ export default function DriftApp() {
         </div>
       </header>
 
-      <SetupGuide setup={setup} error={setupError} checking={checking}
+      <SectionTabs tabs={TABS} selected={tab} onSelect={setTab} />
+
+      <div className="workspace-tools"><SetupGuide setup={setup} error={setupError} checking={checking}
         onCheck={() => { void checkConnection(); }} onSuggestions={() => setTab("inbox")} />
 
       <details className="connection-settings" open={settingsOpen} onToggle={event => setSettingsOpen(event.currentTarget.open)}>
@@ -348,8 +302,10 @@ export default function DriftApp() {
         </section>
       </details>
 
-      <SectionTabs tabs={TABS} selected={tab} onSelect={setTab} />
+      </div>
 
+      {screenResources[tab] && allLoading && <p role="status">Loading page data…</p>}
+      {screenError && <div role="alert" className="resource-error"><p>Page data could not be refreshed. Previously loaded records may be stale; unavailable data is not an empty result.</p><ul>{screenFailures.map(message=><li key={message}>{message}</li>)}</ul><button onClick={()=>void loadAll()} disabled={allLoading}>Retry page data</button></div>}
       {msg && <div className="hint" role="status">{msg}</div>}
       {err && <div className="error" role="alert">{err}</div>}
 
@@ -377,93 +333,20 @@ export default function DriftApp() {
         </section>
       )}
 
-      {tab === "inbox" && (
-        <section role="tabpanel" id="drift-panel-inbox" aria-labelledby="drift-tab-inbox" tabIndex={0} className="panel">
-          <ThoughtInbox headers={authHeaders} refreshKey={historyRevision} onCaptured={() => { void loadAll(); }} />
-          <details className="pad"><summary>Earlier ideas and project links</summary>
-            <label htmlFor="idea-box">Capture an idea (input kept if capture fails):</label>
-            <textarea id="idea-box" value={ideaText} onChange={e => setIdeaText(e.target.value)} placeholder="Half-formed is fine…" />
-            <button className="primary" onClick={submitIdea}>+ Capture idea</button>
-            <ul>
-              {ideas.slice().reverse().slice(0, 20).map(i => (
-                <li key={i.id}>
-                  <button className="idea" onClick={() => setSelected({ kind: "idea", id: i.id, label: i.text.slice(0, 60), detail: `status ${i.status} · confidence ${i.confidence ?? "unverified"} · concepts ${(i.concepts || []).join(", ") || "none"}` })}>
-                    <b>{i.status}</b> {i.text} {(i.confidence ?? 0) < 0.5 && <em> · uncertain/unverified</em>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {selected?.kind === "idea" && <p tabIndex={0} aria-live="polite"><b>Selected idea:</b> {selected.label} — {selected.detail}</p>}
-          </details>
+      {(['inbox','ideas','projects'] as string[]).includes(tab) && (
+        <section role="tabpanel" id={`drift-panel-${tab}`} aria-labelledby={`drift-tab-${tab}`} tabIndex={-1} className="panel">
+          <EntityScreen key={tab} kind={tab === 'inbox' ? 'thought' : tab === 'ideas' ? 'idea' : 'project'} id={route.id} headers={authHeaders} refreshKey={historyRevision}
+            composer={<ThoughtInbox composerOnly headers={authHeaders} refreshKey={historyRevision} onCaptured={() => {setHistoryRevision(value=>value+1);void loadAll();}}/>}/>
         </section>
       )}
+      {tab === 'mind-map' && <section role="tabpanel" id="drift-panel-mind-map" aria-labelledby="drift-tab-mind-map" tabIndex={-1} className="panel"><MindMap headers={authHeaders}/></section>}
+      {tab === 'wiki' && <section role="tabpanel" id="drift-panel-wiki" aria-labelledby="drift-tab-wiki" tabIndex={-1} className="panel"><WikiScreen id={route.id} headers={authHeaders}/></section>}
 
       {tab === "office" && (
         <section role="tabpanel" id="drift-panel-office" aria-labelledby="drift-tab-office" tabIndex={0}>
           <OfficePanel state={String(status?.state ?? "unknown")} name={identity.name || "Drift"}
             connected={Boolean(status) && !statusErr} work={work} savedTask={savedTask} savedProject={projects.find(item => item.id === savedTask?.project_id)} headers={authHeaders}
-            onProject={id => { const project = projects.find(item => item.id === id); if (project) { void openProject(project); setTab('projects'); } }} />
-        </section>
-      )}
-
-      {tab === "projects" && (
-        <section role="tabpanel" id="drift-panel-projects" aria-labelledby="drift-tab-projects" tabIndex={0} className="panel">
-          <h2 className="panel-title">Your projects <span>{projects.length} registered</span></h2>
-          <div className="pad">
-            <p className="page-intro">Keep related ideas and findings together. Add a project, then select it below to review its briefing.</p>
-            <h3>Add a project</h3>
-            <form onSubmit={e => { e.preventDefault(); registerProject(); }}>
-              <label htmlFor="reg-name">Name</label>
-              <input id="reg-name" value={reg.name} onChange={e => setReg({ ...reg, name: e.target.value })} required />
-              <details className="form-options"><summary>Optional project settings</summary>
-              <label htmlFor="reg-repo">Code repository (optional)</label>
-              <input id="reg-repo" value={reg.repo} onChange={e => setReg({ ...reg, repo: e.target.value })} placeholder="organization/repository" />
-              <label htmlFor="reg-path">Project folder on this machine (optional)</label>
-              <input id="reg-path" value={reg.local_path} onChange={e => setReg({ ...reg, local_path: e.target.value })} />
-              <p className="helper">Use an existing folder allowed by this workspace. You can also keep a project here without linking a folder.</p>
-              <label htmlFor="reg-imp">Priority (0 = lowest, 1 = highest)</label>
-              <input id="reg-imp" value={reg.importance} onChange={e => setReg({ ...reg, importance: e.target.value })} type="number" min="0" max="1" step="0.1" />
-              </details>
-              <button className="primary" type="submit">Add project</button>
-            </form>
-            {regNote && <p role="status">{regNote}</p>}
-            <h3>Project shelf</h3>
-            {projects.length === 0 && <p className="empty-state">No projects to show yet. Use the form above to add one. If you expected projects here, check your workspace connection.</p>}
-            <ul>
-              {projects.map(p => (
-                <li key={p.id}>
-                  <button className="project" onClick={() => openProject(p)}><b>{p.name}</b> <small>{p.repo}{p.local_path ? ` · ${p.local_path}` : ""}</small></button>
-                </li>
-              ))}
-            </ul>
-            {selected?.kind === "project" && (
-              <div tabIndex={0} aria-live="polite">
-                <h3>Selected project: {selected.label}</h3>
-                <p>{selected.detail}</p>
-                {projectLoading ? <p role="status">Loading project details…</p> : projectDetail ? (
-                  <>
-                    <p>Related ideas: {projectDetail.ideas.length} · events: {projectDetail.events.length}</p>
-                    <ProjectIntelligence projectId={selected.id} value={projectDetail.intelligence} headers={authHeaders} publishAvailable={Boolean(projects.find(p => p.id === selected.id)?.local_path)} />
-                    <ul>{projectDetail.ideas.slice(0, 5).map(i => <li key={i.id}>{i.text}</li>)}</ul>
-                    <details><summary>Saved drift.md summary</summary>{projectDetail.drift_md ? <pre>{projectDetail.drift_md.slice(0, 2000)}</pre> : <p><small>No drift.md summary available.</small></p>}</details>
-                  </>
-                ) : <p><small>Detail unavailable (backend returned no detail).</small></p>}
-              </div>
-            )}
-            <details className="advanced-details"><summary>Project map & technical links</summary>
-            <p className="helper">An overview of saved links, not an AI recommendation. The project shelf above is the easiest way to open a project.</p>
-            <div className="map" aria-label="Deterministic mind map">
-              <div className="map-center">DRIFT</div>
-              {nodes.map((n, idx) => <button key={n.id} className={`node ${n.kind}`} style={pos(idx)} onClick={() => {
-                const project = projectForNode(n.id, projects);
-                if (project) { void openProject(project); return; }
-                setSelected({ kind: n.kind, id: n.id.slice(2), label: n.label, detail: "idea node — see Inbox" });
-              }}>{n.label.slice(0, 42)}</button>)}
-            </div>
-            <p><small>Edges ({edges.length}, deterministic, no graph lib):</small></p>
-            <ul>{edges.slice(0, 10).map((e, k) => <li key={k}><small>{e.source} —{e.relation}→ {e.target}</small></li>)}</ul>
-            </details>
-          </div>
+            onProject={id => { window.location.hash=routeHref({section:'projects',id}); }} />
         </section>
       )}
 
@@ -475,10 +358,10 @@ export default function DriftApp() {
             <a className="next-step" href="#research-start">Start with a research question ↓</a>
             <details className="advanced-details"><summary>Saved findings & source evidence ({findings.length} findings)</summary>
             <h3>Findings ({findings.length})</h3>
-            {findings.length === 0 && <p>No findings to show yet. Start a session below, or check the workspace connection if results are missing.</p>}
+            {!allLoading && !screenError && findings.length === 0 && <p>No findings to show yet. Start a session below, or check the workspace connection if results are missing.</p>}
             <ul>{findings.slice(-10).map((f, k) => <li key={k}>{f.summary} <small>· confidence {f.confidence ?? "unverified"}</small></li>)}</ul>
             <h3>Sources & citations</h3>
-            {evidence.length === 0 && <p><small>No evidence yet — uncertain/unverified until backend reports it.</small></p>}
+            {!allLoading && !screenError && evidence.length === 0 && <p><small>No evidence yet — uncertain/unverified until backend reports it.</small></p>}
             <ul>
               {evidence.slice(-10).map((e, k) => (
                 <li key={k}>
@@ -511,7 +394,7 @@ export default function DriftApp() {
               <button className="primary" type="submit">Start research</button>
             </form>
             <h3>Your sessions</h3>
-            {sessions.length === 0 && <p className="empty-state">No sessions to show. Your question above is the starting point; connection errors will appear here if sessions cannot load.</p>}
+            {!allLoading && !screenError && sessions.length === 0 && <p className="empty-state">No sessions to show. Your question above is the starting point; connection errors will appear here if sessions cannot load.</p>}
             <ul>{sessions.map(s => <li key={s.id}><button onClick={() => openSession(s.id)}>{s.query} <small>({s.state || "unknown"})</small></button></li>)}</ul>
             {sessionDetail && <article aria-label="Research report">
               <h3>{sessionDetail.query}</h3>
@@ -539,7 +422,7 @@ export default function DriftApp() {
           <div className="pad">
             <p className="page-intro">See what Drift is working on and how much AI allowance remains. Saving thoughts does not require a model call.</p>
             <h3>Tasks</h3>
-            {tasks.length === 0 && <p className="empty-state">No tasks to show. You can keep saving thoughts in your inbox; if activity seems missing, check the workspace connection.</p>}
+            {!allLoading && !screenError && tasks.length === 0 && <p className="empty-state">No tasks to show. You can keep saving thoughts in your inbox; if activity seems missing, check the workspace connection.</p>}
             <button type="button" onClick={() => setTab("approvals")}>Review pending approvals</button>
             <ul>{tasks.map(t => <li className="task-row" key={t.id}>
               <p className="task-summary">{t.source_text || t.goal}</p>
@@ -588,7 +471,7 @@ export default function DriftApp() {
           <h2 className="panel-title">Needs your approval <span>{approvals.length} pending</span></h2>
           <div className="pad">
             <p className="page-intro">Read each task and its blockers before approving. Approval authorizes that task to continue.</p>
-            {approvals.length === 0 && <div className="empty-state"><p>No approvals to show. If the workspace is connected, there is nothing here to approve right now.</p><button type="button" onClick={() => setTab("inbox")}>Back to your inbox</button></div>}
+            {!allLoading && !screenError && approvals.length === 0 && <div className="empty-state"><p>No approvals to show. If the workspace is connected, there is nothing here to approve right now.</p><button type="button" onClick={() => setTab("inbox")}>Back to your inbox</button></div>}
             <ul>
               {approvals.map(a => (
                 <li key={a.id}>

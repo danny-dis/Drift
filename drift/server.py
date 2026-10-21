@@ -170,7 +170,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1
 if os.environ.get("DRIFT_ALLOWED_ORIGINS"):
     app.add_middleware(CORSMiddleware,
         allow_origins=os.environ["DRIFT_ALLOWED_ORIGINS"].split(","),
-        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
+        allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type"])
 
 
 @app.websocket("/ws/{crab_id}")

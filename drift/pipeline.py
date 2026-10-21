@@ -84,15 +84,20 @@ class IdeaPipeline:
     # ------------------------------------------------------------------
     def match_project(self, idea_id: str) -> list[ProjectMatch]:
         """Find matching projects for an idea, scored and sorted high→low."""
+        self.ledger.reload()
         idea = next((i for i in self.ledger.data["ideas"] if i["id"] == idea_id), None)
         if not idea:
             raise KeyError(f"idea {idea_id} not found")
 
+        if idea.get('archived'):
+            return []
         idea_text = idea.get("text", "")
         idea_concepts = set(idea.get("concepts", []))
 
         matches: list[ProjectMatch] = []
         for project in self.ledger.data["projects"]:
+            if project.get('archived'):
+                continue
             match = self.score_match(idea, project)
             if not self._has_weak_match(match.score):
                 matches.append(match)
@@ -102,11 +107,15 @@ class IdeaPipeline:
         # Persist related-project links on the idea (best matches only).
         top = [m.project_id for m in matches[:3]]
         if top:
-            idea.setdefault("related_projects", [])
-            for pid in top:
-                if pid not in idea["related_projects"]:
-                    idea["related_projects"].append(pid)
-            self.ledger.save()
+            def link(data):
+                current = next(i for i in data['ideas'] if i['id'] == idea_id)
+                if current.get('archived'):
+                    return
+                active = {p['id'] for p in data['projects'] if not p.get('archived')}
+                for pid in top:
+                    if pid in active and pid not in current.setdefault('related_projects', []):
+                        current['related_projects'].append(pid)
+            self.ledger.mutate(link)
 
         return matches
 
@@ -168,12 +177,16 @@ class IdeaPipeline:
                 f"expected one of {self.VALID_QUALIFICATIONS}"
             )
 
-        idea = next((i for i in self.ledger.data["ideas"] if i["id"] == idea_id), None)
-        if not idea:
-            raise KeyError(f"idea {idea_id} not found")
-
-        idea["status"] = qualification
-        self.ledger.save()
+        def qualify(data):
+            idea = next((i for i in data['ideas'] if i['id'] == idea_id), None)
+            if idea is None:
+                raise KeyError(f'idea {idea_id} not found')
+            if idea.get('archived'):
+                raise ValueError('Archived idea must be explicitly restored')
+            idea['status'] = qualification
+            idea['revision'] = idea.get('revision', 0) + 1
+            return dict(idea)
+        idea = self.ledger.mutate(qualify)
 
         self.ledger.add_event(DriftEvent(
             kind="decision",

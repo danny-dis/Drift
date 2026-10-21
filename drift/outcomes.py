@@ -58,6 +58,9 @@ def _merge_strings(records: list[dict], key: str) -> list[str]:
 
 
 def record_answer(brain, task, text: str, report_path: str) -> None:
+    from drift.archive_policy import task_suppressed
+    if task_suppressed(brain.env_path, task):
+        return
     outcome = parse_outcome(text)
     outcome['report_path'] = report_path
     outcome['task_id'] = task.id

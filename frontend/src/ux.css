@@ -1,0 +1,59 @@
+/* Shared navigation and entity workbench, using the established green tokens. */
+.drift-shell .tabs{position:sticky;top:0;z-index:4;padding:8px 0;margin:12px 0;background:var(--work-bg);border-bottom:1px solid var(--work-border)}
+.drift-shell .tabs a{text-decoration:none;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--work-border);border-radius:7px;line-height:1.3}
+.workspace-tools{display:flex;align-items:start;gap:12px;flex-wrap:wrap;margin:0 0 16px}
+.workspace-tools>.setup-guide,.workspace-tools>.connection-settings{flex:1 1 280px;margin:0;font-size:13px}
+.workspace-tools summary{padding:8px 12px;min-height:44px}
+.workspace-tools .setup-readiness{font-size:12px}
+.skip-link{position:fixed;top:8px;left:8px;transform:translateY(-200%);z-index:20;padding:12px;background:var(--work-accent);color:var(--work-bg)}
+.skip-link:focus{transform:none}
+.drift-shell .entity-toolbar{display:flex;align-items:end;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+.drift-shell .entity-search{flex:1 1 220px}
+.drift-shell .entity-toolbar label{margin-top:0}
+.drift-shell .entity-toolbar input{margin-bottom:0}
+.drift-shell .archive-filter{display:flex;align-items:center;gap:8px;min-height:44px;font-weight:400}
+.drift-shell .archive-filter input{width:20px;min-height:20px;height:20px;margin:0;accent-color:var(--work-accent)}
+.drift-shell .entity-toolbar button.primary{margin:0}
+.drift-shell .entity-list{margin:0;list-style:none;padding:0}
+.drift-shell .entity-list li{padding:16px 0;border-bottom:1px solid var(--work-border)}
+.drift-shell .entity-list a{display:block;padding:4px 0;min-height:44px;color:var(--work-text);font-weight:600;font-size:17px;white-space:pre-wrap}
+.drift-shell .entity-list small{display:block;color:var(--work-muted)}
+.entity-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:16px 0}
+.drift-shell .entity-actions .primary{margin:0}
+.entity-pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:24px;flex-wrap:wrap}
+.entity-form fieldset{padding:0;border:0;min-width:0}
+.entity-detail{max-width:64rem;overflow-wrap:anywhere}
+.drift-shell .entity-title{font-size:24px;white-space:pre-wrap;line-height:1.4}
+.entity-detail dd{margin:0 0 12px;color:var(--work-muted)}
+.entity-detail dt{font-weight:600}
+.archive-confirm,.cost-warning{border:1px solid var(--work-accent);border-radius:8px;padding:16px;background:var(--work-field)}
+.archive-confirm h4{margin:0}
+.knowledge-map{border:1px solid var(--work-border);background:var(--work-field);border-radius:8px;overflow:auto;max-height:36rem}
+.knowledge-map svg{display:block;width:100%;min-width:640px}
+.knowledge-map rect{fill:var(--work-surface);stroke:var(--work-accent)}
+.knowledge-map text{fill:var(--work-text);font-size:15px}
+.knowledge-map line{stroke:var(--work-muted);stroke-width:2}
+.knowledge-map a:hover rect,.knowledge-map a:focus rect{stroke-width:4}
+.drift-shell .map-list a{display:inline-block;min-height:44px;padding:8px 0}
+.drift-shell .wiki-text{max-height:none}
+.drift-shell > .panel select{width:100%;max-width:100%;min-width:0;min-height:44px;padding:10px 12px;font:inherit;color:var(--work-text);background:var(--work-field);border:1px solid var(--work-border);border-radius:8px}
+.drift-shell button:disabled{opacity:.55;cursor:not-allowed}
+.drift-shell :is(input,textarea,select,button,a,summary){scroll-margin-top:180px}
+.mobile-navigation{display:none}
+@media(max-width:600px){
+ .drift-shell .mobile-navigation{display:flex;position:sticky;top:0;z-index:4;align-items:center;gap:12px;padding:8px 0;margin:8px 0;background:var(--work-bg);border-bottom:1px solid var(--work-border)}
+ .mobile-navigation label{font-size:13px;color:var(--work-muted);flex-shrink:0}
+ .mobile-navigation select{width:100%;min-width:0;min-height:44px;font:inherit;padding:8px;border:1px solid var(--work-border);border-radius:7px;background:var(--work-field);color:var(--work-text)}
+ .drift-shell .tabs{display:none}
+ .drift-shell .tabs .tab{padding:8px;font-size:13px;min-width:0}
+ .workspace-tools{gap:6px;margin-bottom:12px}
+ .workspace-tools>.setup-guide,.workspace-tools>.connection-settings{flex-basis:100%}
+ .workspace-tools .setup-readiness{display:none}
+ .drift-shell .entity-toolbar{gap:12px;margin-bottom:16px}
+ .drift-shell .entity-search{flex-basis:100%}
+ .drift-shell .entity-title{font-size:20px}
+ .drift-shell .entity-pagination{gap:8px;font-size:13px}
+ .drift-shell .entity-pagination button{padding:8px}
+ .drift-shell .knowledge-map{max-width:100%}
+ .drift-shell :is(input,textarea,select,button,a,summary){scroll-margin-top:16px}
+}

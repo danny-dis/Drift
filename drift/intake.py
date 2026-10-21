@@ -49,6 +49,9 @@ def stage_captures(brain, limit=8, max_tasks=20):
                 captures.setdefault(capture_id, capture)
     created = 0
     for capture in captures.values():
+        from drift.archive_policy import capture_suppressed
+        if capture_suppressed(brain, capture):
+            continue
         if created >= max_tasks:
             break
         idea_id = _ensure_idea(brain, capture)

@@ -103,6 +103,7 @@ def check_projects(projects, root):
 
 def install_project_guard(app, root):
     from starlette.responses import JSONResponse
+    app.state.projects_root = Path(root).resolve()
 
     @app.middleware('http')
     async def project_scope(request, call_next):

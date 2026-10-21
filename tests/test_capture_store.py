@@ -19,6 +19,7 @@ def test_original_text_survives_restart_and_canonical_database(tmp_path):
         "id": original["id"], "text": text,
         "created_at": original["created_at"], "status": "captured",
         "idea_id": None, "task_id": None, "report_path": None,
+        "current_text": text, "revision": 0, "archived": False,
     }
     assert original["id"] and original["created_at"]
     assert CaptureStore(tmp_path).get(original["id"]) == original

@@ -44,7 +44,9 @@ async def create_capture(request: Request):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be an object")
     try:
-        return await run_in_threadpool(store.capture, body.get("text"), body.get("client_id"))
+        result = await run_in_threadpool(store.capture, body.get("text"), body.get("client_id"))
+        result['capture'] = await run_in_threadpool(store.view, result['capture']['id'])
+        return result
     except IdempotencyConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from None
     except ValueError as error:
@@ -62,7 +64,8 @@ def list_captures(request: Request):
         raise HTTPException(status_code=400, detail="limit and offset must be integers") from None
     try:
         return store.list(query=params.get("q", ""), status=params.get("status"),
-                          limit=limit, offset=offset)
+                          limit=limit, offset=offset,
+                          include_archived=params.get("include_archived", "").lower() == "true")
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
 
@@ -71,9 +74,44 @@ def list_captures(request: Request):
 def get_capture(capture_id: str, request: Request):
     store = _get_store(request)
     try:
-        capture = store.get(capture_id)
+        capture = store.view(capture_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
     if capture is None:
         raise HTTPException(status_code=404, detail="capture not found")
     return {"capture": capture}
+
+
+async def _revise_capture(capture_id, request, *, archived=None):
+    from drift.ux import mutation_body
+    body = await mutation_body(request, {"text"} if archived is None else set(),
+                               confirm=archived is not None, revision=archived is not False)
+    try:
+        capture = _get_store(request).revise(capture_id, text=body.get('text'),
+            archived=archived, expected_revision=body.get('expected_revision'))
+    except KeyError:
+        raise HTTPException(404, 'capture not found') from None
+    except IdempotencyConflict:
+        raise HTTPException(409, 'revision conflict') from None
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    if archived is True:
+        from drift.ui_api import _get_brain
+        from drift.archive_policy import hold_archived_tasks
+        hold_archived_tasks(_get_brain(request))
+    return {'capture': capture}
+
+
+@router.patch('/{capture_id}')
+async def edit_capture(capture_id: str, request: Request):
+    return await _revise_capture(capture_id, request)
+
+
+@router.delete('/{capture_id}')
+async def archive_capture(capture_id: str, request: Request):
+    return await _revise_capture(capture_id, request, archived=True)
+
+
+@router.post('/{capture_id}/restore')
+async def restore_capture(capture_id: str, request: Request):
+    return await _revise_capture(capture_id, request, archived=False)

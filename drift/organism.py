@@ -179,7 +179,7 @@ class DriftLedger:
             self._refresh_locked()
             existing = next((p for p in self.data["projects"] if p["id"] == project.id), None)
             if existing:
-                existing.update(asdict(project))
+                raise ValueError('Existing project requires revisioned PATCH or explicit restore')
             else:
                 self.data["projects"].append(asdict(project))
             self._node_locked(project.id, "project", project.name)

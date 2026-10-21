@@ -74,6 +74,14 @@ class Task:
     part_index: int = 0
     part_count: int = 1
 
+    archive_hold: bool = False
+    # Owner permission is task-local; restoring a source never sets this.
+    processing_approved: bool = False
+    processing_approval: dict[str, int] = field(default_factory=dict)
+    wiki_page_id: str = ''
+    # Durable provenance of the bounded packet, not processing permission.
+    context_sources: dict[str, int] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -188,6 +196,9 @@ class TaskStore:
         source_text: str = "",
         part_index: int = 0,
         part_count: int = 1,
+        wiki_page_id: str = '',
+        processing_approved: bool = False,
+        processing_approval: dict[str, int] | None = None,
     ) -> Task:
         """Create a new task with a unique id and current timestamps."""
         with self._lock:
@@ -208,7 +219,18 @@ class TaskStore:
                 source_text=source_text,
                 part_index=part_index,
                 part_count=part_count,
+                wiki_page_id=wiki_page_id,
+                processing_approved=processing_approved,
             )
+            from drift.archive_policy import ArchivePolicy
+            policy = ArchivePolicy(self.root)
+            if processing_approved:
+                task.processing_approval = (policy.approval_revisions(task)
+                    if processing_approval is None else dict(processing_approval))
+            if policy.task_suppressed(task):
+                task.archive_hold = True
+                task.status = task.phase = 'blocked'
+                task.blockers = ['Source held; restore before explicitly approving work.']
             self.save({**self._tasks, task_id: task})
             self._tasks[task_id] = task
             self._next_id += 1
@@ -227,6 +249,17 @@ class TaskStore:
         """
         with self._lock:
             task = self._tasks[task_id]
+            if kwargs.get('status') in ('pending', 'complete', 'in_progress'):
+                from drift.archive_policy import ArchivePolicy
+                policy = ArchivePolicy(self.root)
+                if policy.source_suppressed(task):
+                    raise ValueError('Source archived; work cannot resume or complete')
+                if kwargs.get('processing_approved'):
+                    permission = kwargs.get('processing_approval')
+                    permission = dict(policy.approval_revisions(task) if permission is None else permission)
+                    if policy.source_suppressed(task, include_holds=True, approvals=permission):
+                        raise ValueError('Source changed after confirmation; review before approving again')
+                    kwargs['processing_approval'] = permission
             if "phase" in kwargs and not can_transition(task, kwargs["phase"]):
                 raise ValueError(
                     f"Invalid phase transition: {task.phase} -> {kwargs['phase']}"
@@ -265,6 +298,28 @@ class TaskStore:
         tasks.sort(key=lambda t: (-t.priority, t.created_at))
         return tasks[:limit]
 
+    def hold_tasks(self, policy) -> None:
+        """Persist one batched hold sweep, preserving phases and part metadata."""
+        with self._lock:
+            changed = {}
+            for task in self._tasks.values():
+                if task.status == 'complete' or not policy.task_suppressed(task):
+                    continue
+                if task.archive_hold and task.status == 'blocked' and task.phase == 'blocked':
+                    continue
+                candidate = Task.from_dict(task.to_dict())
+                if candidate.phase != 'blocked':
+                    candidate._prev_phase = candidate.phase
+                candidate.archive_hold = True
+                candidate.phase = candidate.status = 'blocked'
+                candidate.blockers = ['Source held; restore before explicitly approving work.']
+                candidate.updated_at = datetime.now(timezone.utc).isoformat()
+                changed[task.id] = candidate
+            if changed:
+                self.save({**self._tasks, **changed})
+                for task_id, candidate in changed.items():
+                    self._tasks[task_id].__dict__.update(candidate.__dict__)
+
     def get_next_task(self) -> Task | None:
         """Highest-priority incomplete task.
 
@@ -272,9 +327,12 @@ class TaskStore:
         Ties broken by created_at (oldest first) so work is FIFO within a
         priority band.
         """
+        from drift.archive_policy import ArchivePolicy
+        policy = ArchivePolicy(self.root)
+        self.hold_tasks(policy)
         candidates = [
             t for t in self._tasks.values()
-            if t.status not in ("complete", "blocked")
+            if t.status not in ("complete", "blocked") and not policy.task_suppressed(t)
         ]
         if not candidates:
             return None

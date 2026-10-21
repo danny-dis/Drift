@@ -91,6 +91,10 @@ def test_idea_already_referenced_by_task_is_not_regenerated(tmp_path):
 
 def test_candidate_task_persists_next_action_and_dedup_key(tmp_path):
     brain = make_brain(tmp_path)
+    from dataclasses import asdict
+    from drift.organism import Idea
+    brain.ledger.mutate(lambda data: data['ideas'].append(
+        asdict(Idea(id='idea-123', text='durable event graph'))))
     candidate = Candidate(
         source="unqualified_idea",
         description="Qualify idea: durable event graph",

@@ -8,6 +8,7 @@ from drift.task import TaskStore
 
 def test_long_idea_candidate_is_not_recreated_after_block_and_restart(tmp_path):
     brain = SimpleNamespace(
+        env_path=str(tmp_path),
         ledger=DriftLedger(str(tmp_path)), tasks=TaskStore(str(tmp_path)),
         watcher=None, stream=None, _inbox_pending=[],
     )

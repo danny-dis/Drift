@@ -381,8 +381,10 @@ class TestIntegration:
         challenges = challenge_assumption("All people always benefit from exercise.")
         assert len(challenges) >= 1
 
-    def test_health_check_full(self, tmp_path):
+    def test_health_check_full(self, tmp_path, monkeypatch):
         """Health check should return healthy for valid environment."""
+        from types import SimpleNamespace
+        monkeypatch.setattr('drift.security.shutil.disk_usage', lambda _: SimpleNamespace(total=100, used=10, free=90))
         health = check_health(str(tmp_path))
         assert health.status == "healthy"
         assert all(health.checks.values())

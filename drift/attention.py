@@ -264,6 +264,8 @@ def generate_candidates(brain: Any) -> list[Candidate]:
         for task in tasks
     ]
     for idea in brain.ledger.data.get("ideas", []):
+        if idea.get('archived') or idea.get('processing_hold'):
+            continue
         if idea.get("status", "captured") == "captured":
             if idea.get("id") in referenced_ideas or f"idea:{idea.get('id', '')}" in attention_keys:
                 continue
@@ -288,6 +290,8 @@ def generate_candidates(brain: Any) -> list[Candidate]:
     # 3. Stale projects (not recently checked)
     now = time.time()
     for project in brain.ledger.data.get("projects", []):
+        if project.get('archived') or project.get('processing_hold'):
+            continue
         pid = project.get("id", "")
         last_round = project.get("last_round")
         staleness_score = 0.5
@@ -404,28 +408,62 @@ class AttentionEconomy:
         return select_best_candidate(candidates, self.budget)
 
     def create_task_from_candidate(self, brain: Any, candidate: Candidate) -> Any:
-        """Create a Task from a selected candidate."""
+        """Admit work only while its source remains current and active."""
+        from types import SimpleNamespace
+        from drift.archive_policy import hold_archived_tasks, source_archived
+
+        idea_id = candidate.dedup_key.removeprefix('idea:') if candidate.dedup_key.startswith('idea:') else ''
+        evidence = f"attention_dedup_key={candidate.dedup_key}" if candidate.dedup_key else ''
+        source = SimpleNamespace(project_id=candidate.project_id, idea_id=idea_id,
+                                 last_evidence=evidence, goal=candidate.description,
+                                 objective=candidate.description)
+        brain.ledger.reload()
+        sources = []
+        for collection, record_id in (('projects', candidate.project_id), ('ideas', idea_id)):
+            if record_id:
+                record = next((p for p in brain.ledger.data.get(collection, []) if p['id'] == record_id), None)
+                if record is None:
+                    return None
+                sources.append((collection, record_id, record.copy()))
+
+        def sources_current(data):
+            for collection, record_id, original in sources:
+                fresh = next((p for p in data.get(collection, []) if p['id'] == record_id), None)
+                if (not fresh or fresh.get('archived') or fresh.get('processing_hold')
+                        or any(fresh.get(key) != original.get(key)
+                               for key in ('revision', 'local_path', 'name', 'text'))):
+                    return False
+            return not source_archived(brain.env_path, source)
+
+        if not sources_current(brain.ledger.data):
+            return None
         task = brain.tasks.create_task(
             goal=candidate.description[:200],
             objective=candidate.description,
             project_id=candidate.project_id,
             priority=candidate.base_priority,
             estimated_cost=candidate.estimated_cost,
+            idea_id=idea_id,
         )
         metadata = {"next_action": candidate.description}
         if candidate.dedup_key:
-            metadata["last_evidence"] = f"attention_dedup_key={candidate.dedup_key}"
+            metadata["last_evidence"] = evidence
         task = brain.tasks.update_task(task.id, **metadata)
-        # Update project's last_round if applicable
-        if candidate.project_id:
-            project = next(
-                (p for p in brain.ledger.data.get("projects", [])
-                 if p["id"] == candidate.project_id),
-                None,
-            )
-            if project:
-                project["last_round"] = datetime.now(timezone.utc).isoformat()
-                brain.ledger.save()
+
+        def checkpoint(data):
+            if not sources_current(data):
+                return False
+            if candidate.project_id:
+                project = next(p for p in data['projects'] if p['id'] == candidate.project_id)
+                project['last_round'] = datetime.now(timezone.utc).isoformat()
+            return True
+
+        if not brain.ledger.mutate(checkpoint):
+            hold_archived_tasks(brain)
+            if not task.archive_hold or task.status != 'blocked':
+                brain.tasks.update_task(task.id, status='blocked', phase='blocked', archive_hold=True,
+                    blockers=['Source changed or held during admission; explicit approval required.'])
+            return None
         return task
 
     def get_status(self) -> dict[str, float]:

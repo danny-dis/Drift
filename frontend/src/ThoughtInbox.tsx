@@ -10,6 +10,7 @@ type Props = {
   onCaptured: () => void;
   organismId?: string;
   refreshKey?: number;
+  composerOnly?: boolean;
 };
 const LIMIT = 20;
 
@@ -75,7 +76,7 @@ function readableDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export default function ThoughtInbox({ headers, onCaptured, organismId = "default", refreshKey = 0 }: Props) {
+export default function ThoughtInbox({ headers, onCaptured, organismId = "default", refreshKey = 0, composerOnly = false }: Props) {
   const capture = useThoughtCapture(headers, organismId);
   const history = useCaptureHistory(headers, organismId, refreshKey);
   const [search, setSearch] = useState("");
@@ -132,7 +133,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
         </div>
       </form>
 
-      <section className="thought-history" aria-labelledby={`${id}-history`}>
+      {!composerOnly && <section className="thought-history" aria-labelledby={`${id}-history`}>
         <p className="thought-muted">Your originals stay unchanged. Open a saved thought to review optional AI suggestions when available.</p>
         <div className="thought-history-heading">
           <h3 id={`${id}-history`}>Saved thoughts</h3>
@@ -205,7 +206,7 @@ export default function ThoughtInbox({ headers, onCaptured, organismId = "defaul
             </nav>
           </>
         )}
-      </section>
+      </section>}
     </section>
   );
 }

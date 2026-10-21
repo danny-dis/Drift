@@ -261,12 +261,24 @@ class TestRetryWithBackoff:
 
 
 class TestHealth:
-    def test_healthy(self, tmp_path):
+    def test_healthy(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        monkeypatch.setattr('drift.security.shutil.disk_usage', lambda _: SimpleNamespace(total=100, used=10, free=90))
         health = check_health(str(tmp_path))
         assert health.status == "healthy"
         assert "writable" in health.checks
         assert "disk_space" in health.checks
         assert "job_queue" in health.checks
+
+    @pytest.mark.parametrize('used', [90, 99])
+    def test_low_disk_is_degraded_even_when_storage_is_writable(self, tmp_path, monkeypatch, used):
+        from types import SimpleNamespace
+        monkeypatch.setattr('drift.security.shutil.disk_usage', lambda _: SimpleNamespace(total=100, used=used, free=100-used))
+        health = check_health(str(tmp_path))
+        assert health.status == 'degraded'
+        assert health.checks['writable'] is True
+        assert health.checks['disk_space'] is False
+        assert health.details['disk_used_pct'] == used
 
     def test_to_dict(self, tmp_path):
         health = check_health(str(tmp_path))

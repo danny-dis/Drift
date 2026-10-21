@@ -64,7 +64,7 @@ class GitWatcher:
     def scan_all(self) -> list[GitChange]:
         """Scan all registered projects for changes since last seen commit."""
         changes: list[GitChange] = []
-        for project_id, local_path in self._watched.items():
+        for project_id, local_path in list(self._watched.items()):
             try:
                 changes.extend(self.scan_project(project_id, local_path))
             except Exception as e:
@@ -78,11 +78,13 @@ class GitWatcher:
         if not local_path:
             return []
 
+        self.ledger.reload()
         project = next(
             (p for p in self.ledger.data.get("projects", []) if p["id"] == project_id),
             None,
         )
-        if not project:
+        if (not project or project.get('archived') or project.get('processing_hold')
+                or project.get('local_path') != local_path):
             return []
 
         last_seen = project.get("last_seen_commit")
@@ -100,11 +102,18 @@ class GitWatcher:
             project_id, local_path, last_seen, current_commit, snapshot.get("branch", "")
         )
 
-        # Update last seen
-        project["last_seen_commit"] = current_commit
-        self.ledger.save()
+        # Git I/O can overlap an owner edit. Checkpoint only this field on the
+        # refreshed record, and discard work collected from an obsolete path.
+        def checkpoint(data):
+            fresh = next((p for p in data.get("projects", []) if p["id"] == project_id), None)
+            if (not fresh or fresh.get('archived') or fresh.get('processing_hold')
+                    or fresh.get('local_path') != local_path
+                    or fresh.get('last_seen_commit') != last_seen):
+                return False
+            fresh["last_seen_commit"] = current_commit
+            return True
 
-        return changes
+        return changes if self.ledger.mutate(checkpoint) else []
 
     def _collect_changes(
         self, project_id: str, local_path: str, last_seen: str | None,
@@ -204,6 +213,9 @@ class GitWatcher:
 
     def create_analysis_task(self, change: GitChange) -> Any | None:
         """Create a Task for a high-significance change."""
+        self.ledger.reload()
+        if any(p['id'] == change.project_id and (p.get('archived') or p.get('processing_hold')) for p in self.ledger.data['projects']):
+            return None
         if not self.should_analyze(change):
             return None
 

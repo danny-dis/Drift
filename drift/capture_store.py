@@ -12,7 +12,8 @@ from uuid import uuid4
 MAX_TEXT_LENGTH = 1_000_000
 MAX_PAGE_SIZE = 1000
 STATUSES = ("captured", "queued", "processed", "needs_review")
-_FIELDS = "id, text, created_at, status, idea_id, task_id, report_path"
+_FIELDS = "id, text, created_at, status, idea_id, task_id, report_path, COALESCE(current_text, text) AS current_text, revision, archived"
+_UX_FIELDS = _FIELDS
 
 
 class IdempotencyConflict(ValueError):
@@ -45,26 +46,38 @@ class CaptureStore:
             from drift.capture_init import enable_wal
             enable_wal(db)
             db.execute("PRAGMA synchronous=FULL")
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS captures (
-                    id TEXT PRIMARY KEY,
-                    text TEXT NOT NULL,
-                    client_id TEXT UNIQUE,
-                    created_at TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'captured'
-                        CHECK (status IN ('captured', 'queued', 'processed', 'needs_review')),
-                    idea_id TEXT,
-                    task_id TEXT,
-                    report_path TEXT,
-                    summary TEXT NOT NULL DEFAULT ''
-                )
-            """)
-            db.execute("CREATE INDEX IF NOT EXISTS captures_order ON captures(created_at DESC, id DESC)")
-            db.execute("CREATE INDEX IF NOT EXISTS captures_status ON captures(status, created_at DESC, id DESC)")
-            db.execute("CREATE INDEX IF NOT EXISTS captures_task ON captures(task_id)")
-            db.execute("""CREATE INDEX IF NOT EXISTS captures_pending
-                ON captures(created_at, id) WHERE task_id IS NULL AND status = 'captured'""")
-            db.commit()
+            # Serialize inspection and DDL together across independent openers.
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS captures (
+                        id TEXT PRIMARY KEY,
+                        text TEXT NOT NULL,
+                        client_id TEXT UNIQUE,
+                        created_at TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'captured'
+                            CHECK (status IN ('captured', 'queued', 'processed', 'needs_review')),
+                        idea_id TEXT,
+                        task_id TEXT,
+                        report_path TEXT,
+                        summary TEXT NOT NULL DEFAULT ''
+                    )
+                """)
+                db.execute("CREATE INDEX IF NOT EXISTS captures_order ON captures(created_at DESC, id DESC)")
+                columns = {row[1] for row in db.execute("PRAGMA table_info(captures)")}
+                for name, definition in (("current_text", "TEXT"), ("revision", "INTEGER NOT NULL DEFAULT 0"),
+                                         ("archived", "INTEGER NOT NULL DEFAULT 0"),
+                                         ("processing_hold", "INTEGER NOT NULL DEFAULT 0")):
+                    if name not in columns:
+                        db.execute(f"ALTER TABLE captures ADD COLUMN {name} {definition}")
+                db.execute("CREATE INDEX IF NOT EXISTS captures_status ON captures(status, created_at DESC, id DESC)")
+                db.execute("CREATE INDEX IF NOT EXISTS captures_task ON captures(task_id)")
+                db.execute("""CREATE INDEX IF NOT EXISTS captures_pending
+                    ON captures(created_at, id) WHERE task_id IS NULL AND status = 'captured'""")
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
 
     @contextmanager
     def _db(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -107,7 +120,7 @@ class CaptureStore:
             return {"capture": dict(row), "deduplicated": False}
 
     def list(self, query: str = "", status: str | None = None,
-             limit: int = 50, offset: int = 0) -> dict:
+             limit: int = 50, offset: int = 0, include_archived: bool = False) -> dict:
         _limit(limit)
         if type(offset) is not int or offset < 0:
             raise ValueError("offset must be a nonnegative integer")
@@ -116,10 +129,12 @@ class CaptureStore:
         if status is not None and status not in STATUSES:
             raise ValueError("unknown capture status")
         clauses, params = [], []
+        if not include_archived:
+            clauses.append("archived = 0")
         if query:
             # instr treats %, _, backslashes and NUL as literal substring data.
-            clauses.append("instr(text, ?) > 0")
-            params.append(query)
+            clauses.append("(instr(text, ?) > 0 OR instr(COALESCE(current_text, text), ?) > 0)")
+            params.extend((query, query))
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
@@ -127,10 +142,10 @@ class CaptureStore:
         with self._db() as db:
             total = db.execute("SELECT COUNT(*) FROM captures" + where, params).fetchone()[0]
             rows = db.execute(
-                f"SELECT {_FIELDS} FROM captures{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT {_UX_FIELDS} FROM captures{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
-        return {"captures": [dict(row) for row in rows], "total": total,
+        return {"captures": [dict(row, archived=bool(row['archived'])) for row in rows], "total": total,
                 "has_more": offset + len(rows) < total}
 
     def get(self, capture_id: str) -> dict | None:
@@ -145,10 +160,42 @@ class CaptureStore:
         _limit(limit)
         with self._db() as db:
             rows = db.execute(
-                f"SELECT {_FIELDS} FROM captures WHERE task_id IS NULL AND status = 'captured' "
+                f"SELECT {_FIELDS} FROM captures WHERE archived = 0 AND processing_hold = 0 AND task_id IS NULL AND status = 'captured' "
                 "ORDER BY created_at, id LIMIT ?", (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def revise(self, capture_id: str, *, text: str | None = None,
+               archived: bool | None = None, expected_revision: int | None = None) -> dict:
+        """Change only owner-editable derivatives; originals and intent keys are immutable."""
+        if text is not None and (not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_LENGTH):
+            raise ValueError("text must be nonempty and within the capture limit")
+        with self._db(write=True) as db:
+            row = db.execute(f"SELECT {_UX_FIELDS} FROM captures WHERE id = ?", (capture_id,)).fetchone()
+            if row is None:
+                raise KeyError(capture_id)
+            if expected_revision is not None and row['revision'] != expected_revision:
+                raise IdempotencyConflict("revision conflict")
+            db.execute("UPDATE captures SET current_text = ?, archived = ?, revision = revision + 1 WHERE id = ?",
+                       (row['current_text'] if text is None else text,
+                        row['archived'] if archived is None else int(archived), capture_id))
+            if archived is True:
+                db.execute('UPDATE captures SET processing_hold = 1 WHERE id = ?', (capture_id,))
+            result = dict(db.execute(f"SELECT {_UX_FIELDS} FROM captures WHERE id = ?", (capture_id,)).fetchone())
+        result['archived'] = bool(result['archived'])
+        return result
+
+    def view(self, capture_id: str) -> dict | None:
+        """Expose owner-editable metadata without changing the raw storage contract."""
+        with self._db() as db:
+            row = db.execute(f"SELECT {_UX_FIELDS} FROM captures WHERE id = ?", (capture_id,)).fetchone()
+        return dict(row, archived=bool(row['archived'])) if row is not None else None
+
+    def processing_held(self, capture_id: str) -> bool:
+        """Restoring visibility is not permission to stage previously missing parts."""
+        with self._db() as db:
+            row = db.execute('SELECT processing_hold FROM captures WHERE id = ?', (capture_id,)).fetchone()
+        return bool(row and row[0])
 
     def link(self, capture_id: str, idea_id: str, task_id: str) -> dict:
         for name, value in (("capture_id", capture_id), ("idea_id", idea_id), ("task_id", task_id)):

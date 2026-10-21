@@ -6,6 +6,8 @@ Drift is a notebook on your computer for unfinished thoughts, research and proje
 
 The current release is [0.2.2](https://github.com/danny-dis/Drift/releases/tag/v0.2.2). Read [what changed](docs/releases/0.2.2.md).
 
+This checkout contains the **0.2.3 candidate**, with editable thoughts, ideas and projects, a direct mind map and an explicitly requested wiki. It has not yet replaced the published release. Read the [candidate notes](docs/releases/0.2.3.md), or use the source instructions below to try it with a disposable box.
+
 ## Install and open it
 
 Install Python 3.12 or 3.13, then run:
@@ -21,7 +23,7 @@ Open **http://localhost:47116**. Keep the terminal open; press Ctrl+C to stop Dr
 
 ## Use it each day
 
-1. Open **Inbox**, write a thought and click **Save**. Ctrl/Cmd+Enter also works. You do not need to choose a category.
+1. Open **Thoughts** (**Inbox** in 0.2.2), write a thought and save it. Ctrl/Cmd+Enter also works. You do not need to choose a category.
 2. **Saved** means Drift has kept your original. It does not mean AI has finished processing it.
 3. Open the thought later to read the original and any saved suggestions. Review suggestions before acting on them.
 
@@ -31,8 +33,13 @@ If AI work stops, open **Needs approval** and read the blocker. Fix the connecti
 
 ### What the other tabs do
 
+The 0.2.3 workspace adds **Ideas**, **Mind map** and **Wiki** as direct pages. Its thought, idea and project screens support add, view, edit, archive and restore. Archive preserves the original and history while holding unfinished work; restore does not approve that work. You can bookmark a page and use browser Back and Forward. The page selector replaces the tab row on a phone.
+
 - **Office** shows a panda acting out the task Drift reports. You can pause movement. The scene is an illustration, not proof that extra workers are running.
 - **Projects** keeps related ideas together. You can link a repository, review its briefing and choose when to publish Drift's section in `drift.md`. Drift does not silently modify source code.
+- **Ideas** lists the ideas separately so they are not buried under another page.
+- **Mind map** shows stored relationships. Open a node to read its thought, idea or project, or use the equivalent list.
+- **Wiki** saves source-linked AI pages after you explicitly request generation. Choose a project by name, review the sources and check any stale or incomplete-output warning. The [Wiki guide](docs/wiki.md) explains usage and recovery. A project briefing is not a wiki page.
 - **Research** saves questions, sources and reports. Citations show where an answer came from; they do not prove it is correct.
 - **Activity & budget** shows tasks, call allowances and usage estimates. Estimates are not billing receipts.
 - **Needs approval** lists work waiting for your review. Approval lets that task continue; it does not start a coding agent.

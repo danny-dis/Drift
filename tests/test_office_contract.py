@@ -10,8 +10,11 @@ def test_office_can_be_mounted_in_the_actual_dashboard():
     assert 'OfficeCanvas' in panel
     assert 'connected' in panel
     assert '<OfficePanel' in app
-    assert 'label: "Office"' in app
-    assert 'useState<Tab>("inbox")' in app
+    navigation = (FRONTEND / 'navigation.ts').read_text(encoding='utf-8')
+    assert "id:'office',label:'Office'" in navigation
+    assert 'const TABS = SECTIONS' in app
+    assert 'parseRoute(' in app and 'window.location.hash' in app
+    assert "return {section:'inbox'}" in navigation
 
 
 def test_legacy_gameworld_keeps_snapshot_and_prop_compatibility():

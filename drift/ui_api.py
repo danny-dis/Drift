@@ -61,23 +61,19 @@ async def read_task_report(task_id: str, request: Request):
 async def list_projects(request: Request):
     """List all projects with their status."""
     brain = _get_brain(request)
-    projects = []
-    for p in brain.ledger.data.get("projects", []):
-        projects.append({
-            "id": p["id"],
-            "name": p.get("name", ""),
-            "repo": p.get("repo", ""),
-            "local_path": p.get("local_path", ""),
-            "last_seen_commit": p.get("last_seen_commit", ""),
-            "last_round": p.get("last_round", ""),
-        })
+    from drift.ux import record_view
+    brain.ledger.reload()
+    projects = [record_view(p) for p in brain.ledger.data.get('projects', [])
+                if not p.get('archived') or request.query_params.get('include_archived') == 'true']
     return {"projects": projects}
 
 
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, request: Request):
     """Get a single project with its intelligence and recent events."""
+    from drift.ux import record_view
     brain = _get_brain(request)
+    brain.ledger.reload()
     project = next(
         (p for p in brain.ledger.data.get("projects", []) if p["id"] == project_id),
         None,
@@ -104,7 +100,7 @@ async def get_project(project_id: str, request: Request):
         drift_md = read_drift_md(project["local_path"])
 
     return {
-        "project": project,
+        "project": record_view(project),
         "events": events[-20:],  # Last 20 events
         "ideas": ideas[-10:],
         "drift_md": drift_md,
@@ -120,7 +116,12 @@ async def get_project(project_id: str, request: Request):
 async def list_ideas(request: Request, status: str | None = None):
     """List all ideas, optionally filtered by status."""
     brain = _get_brain(request)
-    ideas = brain.ledger.data.get("ideas", [])
+    from drift.ux import record_view
+    brain.ledger.reload()
+    from drift.archive_policy import ArchivePolicy, record_archived
+    policy = ArchivePolicy(brain.env_path)
+    ideas = [record_view(i, brain.env_path, policy=policy) for i in brain.ledger.data.get('ideas', [])
+             if not record_archived(brain.env_path, i, policy=policy) or request.query_params.get('include_archived') == 'true']
     if status:
         ideas = [i for i in ideas if i.get("status", "captured") == status]
     return {"ideas": ideas}
@@ -287,11 +288,14 @@ async def resume_research_session(session_id: str, request: Request):
     task = brain.tasks.get_task(session.get("task_id", ""))
     if task is None:
         raise HTTPException(status_code=409, detail="original research task not found")
+    from drift.archive_policy import source_archived
+    if source_archived(brain.env_path, task):
+        raise HTTPException(409, 'Source archived; restore before resuming')
     if task.status == "complete":
         raise HTTPException(status_code=409, detail="completed task cannot resume")
     try:
         from drift.task import PHASES
-        changes = {"status": "pending", "blockers": []}
+        changes = {"status": "pending", "blockers": [], "archive_hold": False, "processing_approved": True}
         if task.phase == "blocked":
             if task._prev_phase not in PHASES or task._prev_phase == "complete":
                 raise ValueError("original task has no valid resumable phase")
@@ -463,6 +467,11 @@ async def approve_task(task_id: str, request: Request):
     task = brain.tasks.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    from drift.archive_policy import ArchivePolicy
+    approval_policy = ArchivePolicy(brain.env_path)
+    if approval_policy.source_suppressed(task):
+        raise HTTPException(409, 'Source archived; restore before approving')
+    permission = approval_policy.approval_revisions(task)
     from sqlite3 import Error as SQLiteError
     from drift.outcomes import reconcile_capture_task
     from drift.task import can_transition
@@ -474,10 +483,13 @@ async def approve_task(task_id: str, request: Request):
     try:
         if task.status == "blocked":
             brain.tasks.update_task(task.id, status="pending", phase=task._prev_phase,
-                attempt_count=0, blockers=[])
+                attempt_count=0, blockers=[], archive_hold=False, processing_approved=True,
+                processing_approval=permission)
         reconcile_capture_task(brain, task)
     except (OSError, SQLiteError):
         raise HTTPException(status_code=503, detail="Approval persistence failed; retry the same task to recover")
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Source or task changed; reload and review before approving again")
     return {"ok": True, "task_id": task_id, "status": "pending"}
 
 
@@ -566,3 +578,10 @@ def read_setup(request: Request):
 async def check_setup_connection(request: Request):
     from drift.setup import check_setup
     return await check_setup(_get_brain(request))
+
+
+# Kept on the UI router so the host's existing authentication applies.
+from drift.ux import router as ux_router
+router.include_router(ux_router)
+from drift.wiki import router as wiki_router
+router.include_router(wiki_router)
